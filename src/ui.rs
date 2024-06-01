@@ -87,7 +87,6 @@ pub fn run() -> Result<(), slint::PlatformError> {
     let ui_game_state = app_state.ui.global::<GameState>();
     ui_game_state.set_board(create_board());
     copy_board(&app_state.game_state, ui_game_state.get_board());
-    style.set_board_image(load_image(include_bytes!("../gui/assets/board.jpg")));
     logic.on_board_height(move |x, y| {
         rules::TOPOGRAPHICAL_BOARD_MAP[x as usize][y as usize] as i32
     });
