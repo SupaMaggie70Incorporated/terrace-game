@@ -1,0 +1,224 @@
+import { Button, VerticalBox } from "std-widgets.slint";
+
+
+export struct SquareInfo {
+    size: int,
+    is_t: bool,
+    p2: bool,
+    selected: bool,
+    highlighted: bool,
+}
+export global Style {
+    in property <image> board-image;
+    in property <brush> p1-piece-color;
+    in property <brush> p2-piece-color;
+    in property <brush> selection-color;
+    in property <brush> highlight-color;
+    pure callback height-to-color(int) -> brush;
+}
+export global Logic {
+    pure callback board-height(int, int) -> int;
+    callback click(int, int);
+}
+export global GameState {
+    in-out property <[[SquareInfo]]> board;
+}
+component LetterT {
+    in property <brush> color;
+    Rectangle {
+        height: 10%;
+        width: 100%;
+        x: 0;
+        y: 0;
+        background: color;
+    }
+    Rectangle {
+        height: 100%;
+        width: 10%;
+        x: parent.width * 0.45;
+        y: 0;
+        background: color;
+    }
+}
+component Circle {
+    in property <float> radius;
+    in property <brush> color;
+    in property <bool> use-rect;
+    if !use-rect: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 1;
+        viewbox-height: 1;
+
+        fill: color;
+        MoveTo {
+            x: 0.5;
+            y: 0.5 - radius;
+        }
+        ArcTo {
+            radius-x: radius;
+            radius-y: radius;
+            x-rotation: 180;
+            x: 0.5;
+            y: 0.5 + radius;
+            sweep: false; // This is unimportant, determines clockwise or counterclockwise
+        }
+        ArcTo {
+            radius-x: radius;
+            radius-y: radius;
+            x-rotation: 180;
+            x: 0.5;
+            y: 0.5 - radius;
+            sweep: false; // This is unimportant, determines clockwise or counterclockwise
+        }
+    }
+    if use-rect: Rectangle {
+        x: (0.5 - radius) * parent.width;
+        y: (0.5 - radius) * parent.height;
+        width: radius * 2 * parent.width;
+        height: radius * 2 * parent.height;
+        background: color;
+    }
+}
+component HighlightCircle {
+    in property <bool> has_piece;
+    if has_piece: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 1;
+        viewbox-height: 1;
+
+        stroke-width: root.height * 0.05;
+        stroke: Style.highlight-color;
+        MoveTo {
+            x: 0.5;
+            y: 0;
+        }
+        ArcTo {
+            radius-x: 0.5;
+            radius-y: 0.5;
+            x-rotation: 180;
+            x: 0.5;
+            y: 1;
+            sweep: false; // This is unimportant, determines clockwise or counterclockwise
+        }
+        ArcTo {
+            radius-x: 0.5;
+            radius-y: 0.5;
+            x-rotation: 180;
+            x: 0.5;
+            y: 0;
+            sweep: false; // This is unimportant, determines clockwise or counterclockwise
+        }
+    }
+    if !has_piece: Circle {
+        height: 100%;
+        width: 100%;
+
+        radius: 20%;
+        color: Style.highlight-color;
+        use-rect: false;
+    }
+}
+component Square {
+    in property <int> position_x;
+    in property <int> position_y;
+    in property <SquareInfo> piece;
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: Style.height-to-color(Logic.board-height(position_x, position_y));
+    }
+    if piece.selected: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: Style.selection-color;
+    }
+    function radius(size: int) -> float {
+        if size == 1 {
+            0.2
+        } else if size == 2 {
+            0.3
+        } else if size == 3 {
+            0.4
+        } else if size == 4 {
+            0.5
+        } else {
+            0.5
+        }
+    }
+    if piece.size > 0: Circle {
+        width: 100%;
+        height: 100%;
+        x: 0;
+        y: 0;
+        radius: radius(piece.size);
+        color: piece.p2 ? Style.p2-piece-color : Style.p1-piece-color;
+        use-rect: false;
+    }
+    if piece.size > 0 && piece.is-t: LetterT {
+        width: 25%;
+        height: 25%;
+        x: 0.375 * parent.width;
+        y: 0.4 * parent.height;
+        color: #ffffff;
+    }
+    if piece.highlighted: HighlightCircle {
+        width: 100%;
+        height: 100%;
+        has_piece: piece.size > 0;
+    }
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => {
+            Logic.click(position_x, position_y);
+        }
+    }
+}
+component Board {
+    callback board-height(int, int) -> int;
+    for a in 8: Rectangle {
+        x: a * root.width / 8;
+        y: 0;
+        width: 12.5%;
+        height: 100%;
+        //background: #ffffff;
+        for b in 8: Square {
+            x: 0;
+            y: (7 - b) * parent.height / 8;
+            width: 100%;
+            height: 12.5%;
+
+            position_x: a;
+            position_y: b;
+            piece: GameState.board[a][b];
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Terrace";
+    background: #202020;
+
+    //min-width: root.height;
+    FocusScope {
+        width: 100%;
+        height: 100%;
+
+        HorizontalLayout {
+            height: 100%;
+
+            Board {
+                width: self.height;
+                board-height(x, y) => {
+                    Logic.board-height(x, y)
+                }
+            }
+            Rectangle { // Used as a buffer right now so you can freely resize the window
+                min-width: 100px;
+                background: #ffffff;
+            }
+        }
+    }
+}
