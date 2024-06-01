@@ -176,9 +176,38 @@ pub enum GameResult {
     DrawAgreement,
     Draw50Moves
 }
+impl Into<AbsoluteGameResult> for GameResult {
+    fn into(self) -> AbsoluteGameResult {
+        match self {
+            Self::P1WinCapture => AbsoluteGameResult::P1Win,
+            Self::P1WinInvasion => AbsoluteGameResult::P1Win,
+            Self::P1WinResignation => AbsoluteGameResult::P1Win,
+
+            Self::P2WinCapture => AbsoluteGameResult::P2Win,
+            Self::P2WinInvasion => AbsoluteGameResult::P2Win,
+            Self::P2WinResignation => AbsoluteGameResult::P2Win,
+
+            Self::Draw50Moves => AbsoluteGameResult::Draw,
+            Self::DrawAgreement => AbsoluteGameResult::Draw,
+
+            Self::Ongoing => panic!("GameResult::Ongoing cannot be converted to AbsoluteGameResult")
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AbsoluteGameResult {
-
+    P1Win,
+    P2Win,
+    Draw
+}
+impl AbsoluteGameResult {
+    pub fn other(self) -> Self {
+        match self {
+            Self::P1Win => Self::P2Win,
+            Self::P2Win => Self::P1Win,
+            Self::Draw => Self::Draw
+        }
+    }
 }
 
 const fn generate_topographical_map() -> [[u8; 8]; 8] {
@@ -278,15 +307,15 @@ impl TerraceGameState {
         } else {
             self.moves_since_capture += 1;
         }
+        let capture = self.square(mov.to);
         *self.square_mut(mov.to) = self.square(mov.from);
         *self.square_mut(mov.from) = Piece::NONE;
         self.move_number += 1;
         self.player_to_move = self.player_to_move.other();
-        let capture = self.square(mov.to);
         if capture.is_t() && self.player_to_move.other() == Player::P1 {
             self.result = GameResult::P1WinCapture;
         }
-        else if capture.is_t() && self.player_to_move.other() == Player::P2{
+        else if capture.is_t() && self.player_to_move.other() == Player::P2 {
             self.result = GameResult::P2WinCapture;
         }
         else if mov.to == Square::from_xy((7, 7)) && self.player_to_move.other() == Player::P1 {
@@ -313,6 +342,10 @@ impl TerraceGameState {
     pub const fn result(&self) -> GameResult {
         self.result
     }
+    pub fn is_style_win(&self) -> bool {
+        (self.result == GameResult::P1WinInvasion && self.board[7][7] == Piece::new(PieceType::T, Player::P1))||
+        (self.result == GameResult::P2WinInvasion && self.board[0][0] == Piece::new(PieceType::T, Player::P2))
+    }
     pub fn is_move_valid(&self, mov: Move) -> bool {
         assert!(self.result == GameResult::Ongoing);
         let piece = self.square(mov.from);
@@ -325,11 +358,12 @@ impl TerraceGameState {
         let height_to = mov.to.height();
         let (x1, y1) = mov.from.xy();
         let (x2, y2) = mov.to.xy();
+        // Horizontal slides are broken
         if height_from == height_to && mov.from != mov.to {
             if capture.is_any {
                 return false;
             }
-            if !mov.from.same_quadrant(mov.to) {return false};
+            if !mov.from.same_quadrant(mov.to) {return false}; // The only case for this is when crossing the center diagonally, which is against the rules(as far as I can tell)
             let min_x = x1.min(x2);
             let max_x = x1.max(x2);
             let min_y = y1.min(y2);
@@ -348,8 +382,11 @@ impl TerraceGameState {
                 }
             }
             if x1 < 4 {
-                if (y1 < 4 && x1 != x2 && self.square(Square::from_xy((max_x, max_y))).is_any) ||
-                (y1 >= 4 && x1 != x2 && self.square(Square::from_xy((max_x, min_y))).is_any) {
+                // This could be cleaned up but I don't have the brainpower right now
+                if y1 < 4 && x1 != x2 && y1 != y2 && self.square(Square::from_xy((max_x, max_y))).is_any {
+                    return false;
+                }
+                if y1 > 4 && x1 != x2 && y1 != y2 && self.square(Square::from_xy((max_x, min_y))).is_any {
                     return false;
                 }
                 for y in min_y + 1..max_y {
@@ -358,10 +395,16 @@ impl TerraceGameState {
                     }
                 }
             } else {
-                if (y1 < 4 && x1 != x2 && self.square(Square::from_xy((min_x, max_y))).is_any) ||
-                (y1 >= 4 && x1 != x2 && self.square(Square::from_xy((min_x, min_y))).is_any) {
+                if y1 < 4 && x1 != x2 && y1 != y2 && self.square(Square::from_xy((min_x, max_y))).is_any {
                     return false;
                 }
+                if y1 > 4 && x1 != x2 && y1 != y2 && self.square(Square::from_xy((min_x, min_y))).is_any {
+                    return false;
+                }
+                /*if (y1 < 4 && x1 != x2 && self.square(Square::from_xy((min_x, max_y))).is_any) ||
+                (y1 >= 4 && x1 != x2 && self.square(Square::from_xy((min_x, min_y))).is_any) {
+                    return false;
+                }*/
                 for y in min_y + 1..max_y {
                     if self.square(Square::from_xy((min_x, y))).is_any {
                         return false;
@@ -377,13 +420,38 @@ impl TerraceGameState {
                 return !capture.is_any;
             } else if mov.from.same_quadrant(mov.to) {
                 return !capture.is_any;
-            } else { // The only case for this is when crossing the center diagonally, which is against the rules(as far as I can tell)
-                return false;
+            } else { // This should be impossible to reach
+                unreachable!();
+                //return false;
             }
         } else if mov.from.is_adjacent(mov.to) {
             return !capture.is_any; // When moving on the same terrace, directly up, or directly down terraces, it only matters if there is a piece there
         } else { // Not a valid type of move
             return false;
+        }
+    }
+    /// This badly needs to be optimized but it works for now
+    pub fn generate_moves(&self, vec: &mut Vec<Move>) {
+        assert!(vec.len() == 0);
+        assert!(self.result == GameResult::Ongoing);
+        for from_x in 0..8 {
+            for from_y in 0..8 {
+                let from = Square::from_xy((from_x, from_y));
+                if self.square(from).is_player(self.player_to_move) {
+                    for to_x in 0..8 {
+                        for to_y in 0..8 {
+                            let to = Square::from_xy((to_x, to_y));
+                            let mov = Move {
+                                from,
+                                to
+                            };
+                            if self.is_move_valid(mov) {
+                                vec.push(mov);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

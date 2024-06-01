@@ -17,7 +17,8 @@ export global Style {
 }
 export global Logic {
     pure callback board-height(int, int) -> int;
-    callback click(int, int);
+    callback left-click(int, int);
+    callback right-click(int, int);
 }
 export global GameState {
     in-out property <[[SquareInfo]]> board;
@@ -171,7 +172,12 @@ component Square {
         width: 100%;
         height: 100%;
         clicked => {
-            Logic.click(position_x, position_y);
+            Logic.left-click(position_x, position_y);
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                Logic.right-click(position_x, position_y);
+            }
         }
     }
 }

@@ -3,9 +3,32 @@ name = "terrace-game"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+ai = ["dep:burn", "dep:flate2"]
+gui = ["dep:image", "dep:slint"]
+default = ["ai", "gui"]
+
 [dependencies]
-image = "0.25"
-slint = "1.6"
+image = {version = "0.25", optional = true}
+slint = {version = "1.6", optional = true}
+
+burn = {version = "0.13.1", no-default-features = true, features = [
+    # Necessary features
+    "std", # Enable standard library
+    "train", # Training models/autodiff
+    "fusion", # Enable "fusing" multiple operations
+    # Nice-to-haves
+    "tui", # Terminal interface
+    "metrics", # View cpu/gpu usage
+    # Backends
+    "candle", # Candle backend, for better performance
+    "wgpu", # wgpu backend, for better error messages and debugging
+    # Not a backend but required as a feature
+    "cuda", # Use cuda by default
+], optional = true}
+
+flate2 = {version = "1.0", optional = true}
+rand = "0.8"
 
 [build-dependencies]
 slint-build = "1.6"

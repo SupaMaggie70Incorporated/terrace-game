@@ -1,5 +1,6 @@
 use std::io::Read;
 
+use rand::Rng;
 use slint::{Color, Image, Model, ModelExt, ModelRc, SharedPixelBuffer, VecModel};
 use image::EncodableLayout;
 
@@ -68,15 +69,19 @@ fn set_square(model: ModelRc::<ModelRc<SquareInfo>>, x: u8, y: u8, info: SquareI
 
 struct AppState {
     game_state: TerraceGameState,
+    state_history: Vec<TerraceGameState>,
+    state_index: usize,
     selected_square: Option<Square>,
     ui: AppWindow,
 }
 
-pub fn run() -> Result<(), slint::PlatformError> {
+pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
     let ui = AppWindow::new()?;
 
     let mut app_state = AppState {
-        game_state: TerraceGameState::setup_new(),
+        game_state: game_state,
+        state_history: vec![game_state],
+        state_index: 0,
         selected_square: None,
         ui
     };
@@ -110,16 +115,21 @@ pub fn run() -> Result<(), slint::PlatformError> {
     style.set_highlight_color(slint::Brush::SolidColor(Color::from_argb_u8(0xff, 0x90, 0x90, 0x90)));
     style.set_selection_color(slint::Brush::SolidColor(Color::from_argb_u8(0x80, 0x00, 0x80, 0x80)));
 
-    logic.on_click(move |x, y| {
+    logic.on_left_click(move |x, y| {
         let app_state = unsafe {&mut *app_state_ptr};
         if app_state.game_state.result() != GameResult::Ongoing {
-            println!("Click disregarded as game over");
-        }
-        else if let Some(from) = app_state.selected_square {
+            println!("Click disregarded as game over: {:?}", app_state.game_state.result());
+        } else if app_state.state_index != app_state.state_history.len() - 1 {
+            app_state.selected_square = None;
+            app_state.state_index += 1;
+            copy_board(&app_state.state_history[app_state.state_index], app_state.ui.global::<GameState>().get_board());
+        } else if let Some(from) = app_state.selected_square {
             let to = Square::from((x as u8, y as u8));
             let mov = Move::new(from, to);
             if app_state.game_state.is_move_valid(mov) {
                 app_state.game_state.make_move(mov);
+                app_state.state_history.push(app_state.game_state);
+                app_state.state_index += 1;
             } else {
                 println!("Illegal move");
             }
@@ -145,6 +155,13 @@ pub fn run() -> Result<(), slint::PlatformError> {
                     }
                 }
             }
+        }
+    });
+    logic.on_right_click(move |x, y| {
+        let app_state = unsafe {&mut *app_state_ptr};
+        if app_state.state_index != 0 {
+            app_state.state_index -= 1;
+            copy_board(&app_state.state_history[app_state.state_index], app_state.ui.global::<GameState>().get_board());
         }
     });
 
