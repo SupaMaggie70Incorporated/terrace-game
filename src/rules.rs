@@ -67,6 +67,9 @@ impl Piece {
     pub const fn is_any(self) -> bool {
         self.is_any
     }
+    pub const fn player(self) -> Player {
+        self.player
+    }
     pub const fn is_player(self, player: Player) -> bool {
         self.is_any && (self.player as u8) == (player as u8) // This is because eq isn't a const trait, and you can only compare primitives like integer types
     }
@@ -157,7 +160,11 @@ pub struct Move {
     pub to: Square
 }
 impl Move {
-    pub fn new(from: Square, to: Square) -> Self {
+    pub const NONE: Self = Move {
+        from: Square {inner: 255},
+        to: Square {inner: 255}
+    };
+    pub const fn new(from: Square, to: Square) -> Self {
         Self {
             from,
             to
@@ -176,8 +183,8 @@ pub enum GameResult {
     DrawAgreement,
     Draw50Moves
 }
-impl Into<AbsoluteGameResult> for GameResult {
-    fn into(self) -> AbsoluteGameResult {
+impl GameResult {
+    pub fn into_absolute(self) -> AbsoluteGameResult {
         match self {
             Self::P1WinCapture => AbsoluteGameResult::P1Win,
             Self::P1WinInvasion => AbsoluteGameResult::P1Win,
@@ -256,7 +263,48 @@ const fn generate_topographical_map() -> [[u8; 8]; 8] {
     }
     map
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UndoableMove {
+    inner: Move,
+    capture: Piece,
+}
 pub const TOPOGRAPHICAL_BOARD_MAP: [[u8; 8]; 8] = generate_topographical_map();
+/*pub const fn generate_possible_moves_map() -> [[(u8,[Move;12]);8];8] {
+    let mut map = [[(0,[Move::new(Square::from_xy((0,0)), Square::from_xy((0,0)));12]);8];8];
+    let mut x = 0;
+    let mut y = 0;
+    while x < 8 {
+        while y < 8 {
+            let sq = Square::from_xy((x, y));
+            let height = sq.height();
+            if x < 4 && y < 4 {
+                // Sliding moves
+                let r = if x > y {x} else {y};
+                let mut var = 0;
+                while var < r {
+                    if x != var && y != r {
+                        map[x as usize][y as usize].1[map[x as usize][y as usize].0] = Move {from: sq, to: Square::from_xy((var, r))};
+                        map[x as usize][y as usize].0 += 1;
+                    }
+                    if x != r && y != var {
+                        map[x as usize][y as usize].1[map[x as usize][y as usize].0] = Move {from: sq, to: Square::from_xy((r, var))};
+                        map[x as usize][y as usize].0 += 1;
+                    }
+                    var += 1;
+                }
+                if x != y {
+                    map[x as usize][y as usize].1[map[x as usize][y as usize].0] = Move {from: sq, to: Square::from_xy((r, r))};
+                    map[x as usize][y as usize].0 += 1;
+                }
+            }
+
+            y += 1;
+        }
+        x += 1;
+    }
+    todo!()
+}
+pub const POSSIBLE_MOVES_MAP: [[(u8,[Move;12]);8];8] = generate_possible_moves_map();*/
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerraceGameState {
@@ -299,7 +347,10 @@ impl TerraceGameState {
         let (x, y) = sq.xy();
         &mut self.board[x as usize][y as usize]
     }
-    pub fn make_move(&mut self, mov: Move) {
+    pub fn skip_turn(&mut self) {
+        self.player_to_move = self.player_to_move.other();
+    }
+    pub fn make_move(&mut self, mov: Move) -> UndoableMove {
         assert!(self.result == GameResult::Ongoing);
         assert!(self.is_move_valid(mov));
         if self.square(mov.to).is_any {
@@ -326,6 +377,10 @@ impl TerraceGameState {
         }
         else if self.moves_since_capture >= 100 {
             self.result = GameResult::Draw50Moves;
+        }
+        UndoableMove {
+            inner: mov,
+            capture
         }
     }
     pub fn resignation(&mut self, player: Player) {
@@ -386,7 +441,7 @@ impl TerraceGameState {
                 if y1 < 4 && x1 != x2 && y1 != y2 && self.square(Square::from_xy((max_x, max_y))).is_any {
                     return false;
                 }
-                if y1 > 4 && x1 != x2 && y1 != y2 && self.square(Square::from_xy((max_x, min_y))).is_any {
+                if y1 >= 4 && x1 != x2 && y1 != y2 && self.square(Square::from_xy((max_x, min_y))).is_any {
                     return false;
                 }
                 for y in min_y + 1..max_y {
@@ -398,7 +453,7 @@ impl TerraceGameState {
                 if y1 < 4 && x1 != x2 && y1 != y2 && self.square(Square::from_xy((min_x, max_y))).is_any {
                     return false;
                 }
-                if y1 > 4 && x1 != x2 && y1 != y2 && self.square(Square::from_xy((min_x, min_y))).is_any {
+                if y1 >= 4 && x1 != x2 && y1 != y2 && self.square(Square::from_xy((min_x, min_y))).is_any {
                     return false;
                 }
                 /*if (y1 < 4 && x1 != x2 && self.square(Square::from_xy((min_x, max_y))).is_any) ||
@@ -453,5 +508,16 @@ impl TerraceGameState {
                 }
             }
         }
+    }
+    pub fn moves_since_capture(&self) -> u16 {
+        self.moves_since_capture
+    }
+    pub fn move_number(&self) -> u16 {
+        self.move_number
+    }
+    pub fn undo_move(&mut self, mov: UndoableMove) {
+        self.result = GameResult::Ongoing;
+        *self.square_mut(mov.inner.from) = self.square(mov.inner.to);
+        *self.square_mut(mov.inner.to) = mov.capture;
     }
 }

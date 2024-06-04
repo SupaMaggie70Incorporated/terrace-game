@@ -4,7 +4,7 @@ use rand::Rng;
 use slint::{Color, Image, Model, ModelExt, ModelRc, SharedPixelBuffer, VecModel};
 use image::EncodableLayout;
 
-use crate::rules::{self, GameResult, Move, Square, TerraceGameState};
+use crate::{eval_hce, rules::{self, GameResult, Move, Square, TerraceGameState}};
 
 slint::include_modules!();
 
@@ -117,7 +117,7 @@ pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
 
     logic.on_left_click(move |x, y| {
         let app_state = unsafe {&mut *app_state_ptr};
-        if app_state.game_state.result() != GameResult::Ongoing {
+        if app_state.game_state.result() != GameResult::Ongoing && app_state.state_index == app_state.state_history.len() - 1 {
             println!("Click disregarded as game over: {:?}", app_state.game_state.result());
         } else if app_state.state_index != app_state.state_history.len() - 1 {
             app_state.selected_square = None;
@@ -130,6 +130,14 @@ pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
                 app_state.game_state.make_move(mov);
                 app_state.state_history.push(app_state.game_state);
                 app_state.state_index += 1;
+                if app_state.game_state.result() == GameResult::Ongoing {
+                    /*let mut policies = Vec::new();
+                    let (mov, eval) = eval_hce::search_blanket_depth(&app_state.game_state, 4, &mut policies);
+                    app_state.game_state.make_move(mov);
+                    app_state.state_history.push(app_state.game_state);
+                    app_state.state_index += 1;
+                    println!("Computer moved, eval: {}", eval);*/
+                }
             } else {
                 println!("Illegal move");
             }
