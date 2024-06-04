@@ -4,7 +4,7 @@ use rand::Rng;
 use slint::{Color, Image, Model, ModelExt, ModelRc, SharedPixelBuffer, VecModel};
 use image::EncodableLayout;
 
-use crate::{eval_hce, rules::{self, GameResult, Move, Square, TerraceGameState}};
+use crate::rules::{self, GameResult, Move, Square, TerraceGameState};
 
 slint::include_modules!();
 
