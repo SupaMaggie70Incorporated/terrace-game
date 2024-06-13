@@ -68,7 +68,7 @@ pub fn eval_board(board: &TerraceGameState, legal_move_policies: &mut Vec<(Move,
             AbsoluteGameResult::P2Win => -INFINITY
         }
     }
-    for x in 0..8 {
+    /*for x in 0..8 {
         for y in 0..8 {
             let from = Square::from_xy((x, y));
             if board.square(from).is_player(Player::P1) {
@@ -82,7 +82,7 @@ pub fn eval_board(board: &TerraceGameState, legal_move_policies: &mut Vec<(Move,
                 }
             }
         }
-    }
+    }*/
     let mut piece_score = 0.0;
     let mut defensive_score = 0.0;
     let mut offensive_score = 0.0;

@@ -1,9 +1,16 @@
 use std::env::args;
+use std::ops::Deref;
+use burn::module::Module;
 #[cfg(feature = "ai")]
-use ai::{eval::{compare, elo_comparison, CompareResult, EloComparisonMode}, net::{Mlp, MlpConfig, Resnet, ResnetConfig}, train_loop::train_networks};
+use ai::{compare::{compare_singlethreaded, elo_comparison, CompareResult, EloComparisonMode}, eval::RandomEvaluator, net::{Mlp, MlpConfig, Resnet, ResnetConfig, NetworkEvaluator}};
+#[cfg(feature = "ai")]
+use mcts::MctsSearchConfig;
 use rand::Rng;
 use rules::{AbsoluteGameResult, GameResult, TerraceGameState};
 use cfg_if::cfg_if;
+use crate::ai::CURRENT_NETWORK_TYPE;
+use crate::ai::eval::HceEvaluator;
+use crate::ai::train_loop::{train_networks_old, training_loop};
 
 mod rules;
 #[cfg(feature = "gui")]
@@ -16,6 +23,7 @@ mod mcts;
 mod eval_hce;
 
 fn main() {
+    println!("Hello, world!");
     cfg_if! {
         if #[cfg(all(feature = "gui", not(feature = "ai")))] {
             gui::run(TerraceGameState::setup_new()).unwrap();
@@ -35,42 +43,83 @@ fn main() {
                     #[cfg(feature = "ai")]
                     "gen-data" => {
                         println!("Generating data");
-                        //ai::data::generate_random_data("/media/FastSSD/Databases/Terrace_Training/random/0.bin", 100, 64, 8).unwrap();
-                        ai::data::generate_random_data_multithreaded("/media/FastSSD/Databases/Terrace_Training/test/", 12, Some(240), true, 100_000, 64, 8);
+                        if args.len() < 3 {
+                            let network = ai::CURRENT_NETWORK_CONFIG.init::<ai::BACKEND>(&ai::CPU);
+                            let network = network.load_file("nets/net0.mpk", &*ai::RECORDER, &ai::CPU).unwrap();
+                            let eval = NetworkEvaluator::new(network);
+                            //let eval = RandomEvaluator::default();
+                            // Expect 4000 datapoints every ~20 minutes
+                            if true {
+                                ai::data::generate_data_multithreaded("/media/supa/FastSSD/Databases/Terrace_Training/371elo/", 10, Some(400), true, eval, MctsSearchConfig {
+                                    stop_condition: mcts::MctsStopCondition::Evaluations(500),
+                                    initial_list_size: 512
+                                }, 4000, 64, 32);
+                            } else {
+                                ai::data::generate_data("/media/supa/FastSSD/Databases/Terrace_Training/371elo/0.bin", &eval, MctsSearchConfig {
+                                    stop_condition: mcts::MctsStopCondition::Evaluations(500),
+                                    initial_list_size: 512
+                                }, 4000, 64, 32, true).unwrap();
+                            }
+                        }
                     }
                     #[cfg(feature = "ai")]
                     "train" => {
-
                         println!("Training");
-                        //let config = MlpConfig::new(vec![16]);
-                        let config = ResnetConfig::new(4, 1, 1);
-                        train_networks::<_, ai::AUTODIFF_BACKEND, Resnet<ai::AUTODIFF_BACKEND>, _>("/media/FastSSD/Databases/Terrace_Training/random/", "./graphs", true, 1, &ai::DEVICE, move || {config.init(&ai::DEVICE)}, 0.01, 0.9);
+                        let config = ai::CURRENT_NETWORK_CONFIG.deref();
+                        train_networks_old::<_, ai::AUTODIFF_BACKEND, ai::CURRENT_NETWORK_TYPE<ai::AUTODIFF_BACKEND>, _>("/media/supa/FastSSD/Databases/Terrace_Training/data/random/", 2, "./graphs", true, 1, &ai::DEVICE, move || {config.init(&ai::DEVICE)}, 0.01, 0.9);
+                    }
+                    #[cfg(feature = "ai")]
+                    "train-loop" => {
+                        println!("Starting training loop");
+                        training_loop();
+                    }
+                    #[cfg(feature = "ai")]
+                    "net-perf" => {
+                        println!("Doing performance tests");
+                        ai::do_perf_tests();
                     }
                     #[cfg(feature = "ai")]
                     "elo-from-zero" => {
                         println!("Comparing");
-                        let net = ResnetConfig::new(4, 1, 1).init::<ai::BACKEND>(&ai::DEVICE);
-                        //let rand_evaluator = RandomEvaluator::default();
-                        let rand_evaluator = MlpConfig::new(vec![]).init::<ai::BACKEND>(&ai::DEVICE);
-                        let results = compare(&ai::DEVICE, &net, &rand_evaluator, 256, 64);
-                        let (elo_diff, elo_range) = elo_comparison(results, EloComparisonMode::Games, 0.95);
+                        let net = ai::CURRENT_NETWORK_CONFIG.init::<ai::BACKEND>(&ai::CPU);
+                        let net = net.load_file("nets/net0.mpk", &*ai::RECORDER, &ai::CPU).unwrap();
+                        let net_evaluator = NetworkEvaluator::new(net);
+                        //let net_evaluator = HceEvaluator::default();
+                        let random_evaluator = RandomEvaluator::default();
+                        let results = compare_singlethreaded(&net_evaluator, &random_evaluator, 64, 32, MctsSearchConfig {
+                            stop_condition: mcts::MctsStopCondition::Evaluations(500),
+                            initial_list_size: 512
+                        });
                         println!("Results: {:#?}", results);
+                        let (elo_diff, elo_range) = elo_comparison(results, EloComparisonMode::Games, 0.95);
                         println!("Elo: {} +/- {}", elo_diff, elo_range);
                         let (elo_diff, elo_range) = elo_comparison(results, EloComparisonMode::DecisiveGames, 0.95);
                         println!("Decisive elo: {} +/- {}", elo_diff, elo_range);
-                        println!("Evaluations: {}", unsafe {ai::eval::NUM_EVALUATIONS});
+                        let (elo_diff, elo_range) = elo_comparison(results, EloComparisonMode::Pairs, 0.95);
+                        println!("Pair elo: {} +/- {}", elo_diff, elo_range);
+                        let (elo_diff, elo_range) = elo_comparison(results, EloComparisonMode::DecisivePairs, 0.95);
+                        println!("Decisive pair elo: {} +/- {}", elo_diff, elo_range);
                     }
                     #[cfg(feature = "ai")]
                     "other" => {
-                        let (diff, conf) = ai::eval::elo_comparison(CompareResult {
-                            net1_wins: 125,
-                            draws: 199,
-                            net2_wins: 148,
-                            net1_pair_wins: 0,
-                            drawn_pairs: 0,
-                            net2_pair_wins: 0,
-                        }, EloComparisonMode::Games, 0.95);
-                        println!("{} +/- {}", diff, conf);
+                        println!("Comparing");
+                        let net = ai::CURRENT_NETWORK_CONFIG.init::<ai::BACKEND>(&ai::CPU);
+                        let net = net.load_file("nets/net0.mpk", &*ai::RECORDER, &ai::CPU).unwrap();
+                        let net_evaluator = NetworkEvaluator::new(net);
+                        let hce_evaluator = HceEvaluator::default();
+                        let results = compare_singlethreaded(&net_evaluator, &hce_evaluator, 64, 32, MctsSearchConfig {
+                            stop_condition: mcts::MctsStopCondition::Evaluations(500),
+                            initial_list_size: 512
+                        });
+                        println!("Results: {:#?}", results);
+                        let (elo_diff, elo_range) = elo_comparison(results, EloComparisonMode::Games, 0.95);
+                        println!("Elo: {} +/- {}", elo_diff, elo_range);
+                        let (elo_diff, elo_range) = elo_comparison(results, EloComparisonMode::DecisiveGames, 0.95);
+                        println!("Decisive elo: {} +/- {}", elo_diff, elo_range);
+                        let (elo_diff, elo_range) = elo_comparison(results, EloComparisonMode::Pairs, 0.95);
+                        println!("Pair elo: {} +/- {}", elo_diff, elo_range);
+                        let (elo_diff, elo_range) = elo_comparison(results, EloComparisonMode::DecisivePairs, 0.95);
+                        println!("Decisive pair elo: {} +/- {}", elo_diff, elo_range);
                     }
                     _ => println!("Unrecognized mode!")
                 };

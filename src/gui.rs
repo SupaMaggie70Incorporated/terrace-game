@@ -1,8 +1,12 @@
 use std::io::Read;
+use burn::module::Module;
+use cfg_if::cfg_if;
 
 use rand::Rng;
 use slint::{Color, Image, Model, ModelExt, ModelRc, SharedPixelBuffer, VecModel};
 use image::EncodableLayout;
+use crate::ai::eval::{HceEvaluator, RandomEvaluator};
+use crate::mcts::{MctsSearch, MctsSearchConfig, MctsStopCondition};
 
 use crate::rules::{self, GameResult, Move, Square, TerraceGameState};
 
@@ -114,7 +118,13 @@ pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
     style.set_p2_piece_color(slint::Brush::SolidColor(Color::from_rgb_u8(0, 0, 0x80)));
     style.set_highlight_color(slint::Brush::SolidColor(Color::from_argb_u8(0xff, 0x90, 0x90, 0x90)));
     style.set_selection_color(slint::Brush::SolidColor(Color::from_argb_u8(0x80, 0x00, 0x80, 0x80)));
-
+    #[cfg(feature = "ai")]
+    let eval = {
+        let net = crate::ai::CURRENT_NETWORK_CONFIG.init::<crate::ai::BACKEND>(&crate::ai::CPU);
+        let net = net.load_file("nets/net0.mpk", &*crate::ai::RECORDER, &crate::ai::CPU).unwrap();
+        let eval = crate::ai::net::NetworkEvaluator::new(net);
+        eval
+    };
     logic.on_left_click(move |x, y| {
         let app_state = unsafe {&mut *app_state_ptr};
         if app_state.game_state.result() != GameResult::Ongoing && app_state.state_index == app_state.state_history.len() - 1 {
@@ -123,6 +133,34 @@ pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
             app_state.selected_square = None;
             app_state.state_index += 1;
             copy_board(&app_state.state_history[app_state.state_index], app_state.ui.global::<GameState>().get_board());
+        }
+        else if cfg!(feature="ai") {
+            println!("Making move");
+            app_state.selected_square = None;
+            let mut mcts = MctsSearch::new(app_state.game_state, MctsSearchConfig {
+                stop_condition: MctsStopCondition::MaxTime(std::time::Duration::from_secs_f32(0.1)),
+                //stop_condition: MctsStopCondition::Evaluations(4000),
+                initial_list_size: 4096
+            }, &eval as *const _);
+            let res = mcts.search();
+            println!("Network has value {:?} after {} nodes", res.value, res.evaluations);
+            app_state.game_state.make_move(res.mov);
+            app_state.state_history.push(app_state.game_state);
+            app_state.state_index += 1;
+            copy_board(&app_state.game_state, app_state.ui.global::<GameState>().get_board());
+            if app_state.game_state.result() == GameResult::Ongoing {
+                let mut mcts = MctsSearch::new(app_state.game_state, MctsSearchConfig {
+                    stop_condition: MctsStopCondition::MaxTime(std::time::Duration::from_secs_f32(0.1)),
+                    //: MctsStopCondition::Evaluations(4000),
+                    initial_list_size: 4096
+                }, &RandomEvaluator::default() as *const _);
+                let res = mcts.search();
+                println!("Hce has value {:?} after {} nodes", res.value, res.evaluations);
+                app_state.game_state.make_move(res.mov);
+                app_state.state_history.push(app_state.game_state);
+                app_state.state_index += 1;
+                copy_board(&app_state.game_state, app_state.ui.global::<GameState>().get_board());
+            }
         } else if let Some(from) = app_state.selected_square {
             let to = Square::from((x as u8, y as u8));
             let mov = Move::new(from, to);
@@ -131,12 +169,17 @@ pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
                 app_state.state_history.push(app_state.game_state);
                 app_state.state_index += 1;
                 if app_state.game_state.result() == GameResult::Ongoing {
-                    /*let mut policies = Vec::new();
-                    let (mov, eval) = eval_hce::search_blanket_depth(&app_state.game_state, 4, &mut policies);
-                    app_state.game_state.make_move(mov);
-                    app_state.state_history.push(app_state.game_state);
-                    app_state.state_index += 1;
-                    println!("Computer moved, eval: {}", eval);*/
+                    cfg_if! {
+                        if #[cfg(feature = "ai")] {
+                            let mut mcts = MctsSearch::new(app_state.game_state, MctsSearchConfig {
+                                stop_condition: MctsStopCondition::MaxTime(std::time::Duration::from_secs_f32(1.0)),
+                                initial_list_size: 8192
+                            }, &eval as *const _);
+                            let res = mcts.search();
+                            println!("Computer has value {:?}", res.value);
+                            app_state.game_state.make_move(res.mov);
+                        }
+                    }
                 }
             } else {
                 println!("Illegal move");

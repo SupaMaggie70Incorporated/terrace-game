@@ -14,7 +14,7 @@ else
     elif [ "perf" = "$1" ]
         then
             cargo build --release
-            echo "Run the command 'sudo sudo perf record --call-graph dwarf ./target/release/terrace-game <mode>'"
+            echo "Run the command 'sudo perf record --call-graph dwarf ./target/release/terrace-game <mode>'"
             echo "Then, run the command 'sudo hotspot ./perf.data'"
     else
         echo "Unknown command: $1"

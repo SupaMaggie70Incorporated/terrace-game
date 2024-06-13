@@ -1,3 +1,5 @@
+use lazy_static::lazy_static;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Player {
     P1,
@@ -96,22 +98,26 @@ impl From<(u8, u8)> for Square {
     }
 }
 impl Square {
+    pub const fn from_xy(value: (u8, u8)) -> Self {
+        assert!(value.0 < 8 && value.1 < 8);
+        Self {
+            inner: value.0 + (value.1 << 3)
+        }
+    }
+    pub const fn from_index(index: u8) -> Self {
+        Self {
+            inner: index
+        }
+    }
     pub const fn height(self) -> u8 {
         let (x, y) = self.xy();
         TOPOGRAPHICAL_BOARD_MAP[x as usize][y as usize]
     }
-    /// So that we can use it in const expressions
-    pub const fn from_xy(value: (u8, u8)) -> Self {
-        assert!(value.0 < 8 && value.1 < 8);
-        Self {
-            inner: value.0 + (value.1 << 4)
-        }
-    }
     pub const fn xy(self) -> (u8, u8) {
-        (self.inner & 15, self.inner >> 4)
+        (self.inner & 7, self.inner >> 3)
     }
     pub const fn x(self) -> u8 {
-        self.inner & 15
+        self.inner & 7
     }
     pub const fn y(self) -> u8 {
         self.inner >> 4
@@ -153,6 +159,10 @@ impl Square {
         let (x2, y2) = other.xy();
         return ((x1 < 4) == (x2 < 4)) && ((y1 < 4) == (y2 < 4))
     }
+    pub const fn index(self) -> u8 {
+        assert!(self.inner < 64);
+        self.inner
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Move {
@@ -163,6 +173,10 @@ impl Move {
     pub const NONE: Self = Move {
         from: Square {inner: 255},
         to: Square {inner: 255}
+    };
+    pub const SKIP: Self = Move {
+        from: Square {inner: 0},
+        to: Square {inner: 0}
     };
     pub const fn new(from: Square, to: Square) -> Self {
         Self {
@@ -267,44 +281,93 @@ const fn generate_topographical_map() -> [[u8; 8]; 8] {
 pub struct UndoableMove {
     inner: Move,
     capture: Piece,
+    prev_moves_since_capture: u16,
 }
 pub const TOPOGRAPHICAL_BOARD_MAP: [[u8; 8]; 8] = generate_topographical_map();
-/*pub const fn generate_possible_moves_map() -> [[(u8,[Move;12]);8];8] {
-    let mut map = [[(0,[Move::new(Square::from_xy((0,0)), Square::from_xy((0,0)));12]);8];8];
-    let mut x = 0;
-    let mut y = 0;
-    while x < 8 {
-        while y < 8 {
-            let sq = Square::from_xy((x, y));
-            let height = sq.height();
-            if x < 4 && y < 4 {
-                // Sliding moves
-                let r = if x > y {x} else {y};
-                let mut var = 0;
-                while var < r {
-                    if x != var && y != r {
-                        map[x as usize][y as usize].1[map[x as usize][y as usize].0] = Move {from: sq, to: Square::from_xy((var, r))};
-                        map[x as usize][y as usize].0 += 1;
-                    }
-                    if x != r && y != var {
-                        map[x as usize][y as usize].1[map[x as usize][y as usize].0] = Move {from: sq, to: Square::from_xy((r, var))};
-                        map[x as usize][y as usize].0 += 1;
-                    }
-                    var += 1;
-                }
-                if x != y {
-                    map[x as usize][y as usize].1[map[x as usize][y as usize].0] = Move {from: sq, to: Square::from_xy((r, r))};
-                    map[x as usize][y as usize].0 += 1;
-                }
-            }
-
-            y += 1;
-        }
-        x += 1;
-    }
-    todo!()
+lazy_static! {
+    pub static ref POSSIBLE_MOVE_MAP: [[(u8,[Move;12]);8];8] = get_possible_moves_map();
+    pub static ref ALL_POSSIBLE_MOVES: Vec<Move> = get_all_possible_moves();
 }
-pub const POSSIBLE_MOVES_MAP: [[(u8,[Move;12]);8];8] = generate_possible_moves_map();*/
+pub const NUM_POSSIBLE_MOVES: usize = 568;
+pub fn get_possible_moves_map() -> [[(u8,[Move;12]);8];8] {
+    let mut map = [[(0, [Move::NONE; 12]); 8]; 8];
+    for x in 0..8 {
+        for y in 0..8 {
+            map[x][y] = get_possible_moves(Square::from_xy((x as u8, y as u8)));
+        }
+    }
+    map
+}
+pub fn get_all_possible_moves() -> Vec<Move> {
+    let mut vec = Vec::new();
+    for x in 0..8 {
+        for y in 0..8 {
+            let entry = POSSIBLE_MOVE_MAP[x][y];
+            for mov in &entry.1[0..entry.0 as usize] {
+                vec.push(*mov);
+            }
+        }
+    }
+    vec
+}
+pub fn get_possible_moves(sq: Square) -> (u8, [Move;12]) {
+    let (sq_x, sq_y) = sq.xy();
+    let mut b = TerraceGameState::setup_new();
+    b.board = [[Piece::NONE; 8]; 8];
+    b.board[sq_x as usize][sq_y as usize] = Piece::new(PieceType::S1, Player::P1);
+
+    let mut move_index = 0;
+    let mut moves = [Move::NONE;12];
+    for x in 0..8 {
+        for y in 0..8 {
+            let mov = Move::new(sq, Square::from_xy((x, y)));
+            if sq == Square::from_xy((x, y)) {
+                continue;
+            }
+            if b.is_move_valid(mov) {
+                moves[move_index] = mov;
+                move_index += 1;
+            }
+        }
+    }
+    if sq_x > 0 {
+        if sq_y > 0 {
+            b.board[sq_x as usize - 1][sq_y as usize - 1] = Piece::new(PieceType::S1, Player::P2);
+            let mov = Move::new(sq, Square::from_xy((sq_x - 1, sq_y - 1)));
+            if b.is_move_valid(mov) {
+                moves[move_index] = mov;
+                move_index += 1;
+            }
+        }
+        if sq_y < 7 {
+            b.board[sq_x as usize - 1][sq_y as usize + 1] = Piece::new(PieceType::S1, Player::P2);
+            let mov = Move::new(sq, Square::from_xy((sq_x - 1, sq_y + 1)));
+            if b.is_move_valid(mov) {
+                moves[move_index] = mov;
+                move_index += 1;
+            }
+        }
+    }
+    if sq_x < 7 {
+        if sq_y > 0 {
+            b.board[sq_x as usize + 1][sq_y as usize - 1] = Piece::new(PieceType::S1, Player::P2);
+            let mov = Move::new(sq, Square::from_xy((sq_x + 1, sq_y - 1)));
+            if b.is_move_valid(mov) {
+                moves[move_index] = mov;
+                move_index += 1;
+            }
+        }
+        if sq_y < 7 {
+            b.board[sq_x as usize + 1][sq_y as usize + 1] = Piece::new(PieceType::S1, Player::P2);
+            let mov = Move::new(sq, Square::from_xy((sq_x + 1, sq_y + 1)));
+            if b.is_move_valid(mov) {
+                moves[move_index] = mov;
+                move_index += 1;
+            }
+        }
+    }
+    (move_index as u8, moves)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerraceGameState {
@@ -315,6 +378,7 @@ pub struct TerraceGameState {
     result: GameResult,
 }
 impl TerraceGameState {
+    pub const NO_CAPTURE_MOVES_TO_DRAW: u16 = 40;
     pub const fn setup_new() -> Self {
         let mut board = [[Piece::NONE;8];8];
         let mut x = 0;
@@ -333,7 +397,7 @@ impl TerraceGameState {
             board,
             moves_since_capture: 0,
             move_number: 0,
-            result: GameResult::Ongoing
+            result: GameResult::Ongoing,
         }
     }
     pub const fn player_to_move(&self) -> Player {
@@ -351,8 +415,17 @@ impl TerraceGameState {
         self.player_to_move = self.player_to_move.other();
     }
     pub fn make_move(&mut self, mov: Move) -> UndoableMove {
+        if mov == Move::SKIP {
+            self.skip_turn();
+            return UndoableMove {inner: Move::SKIP, capture: Piece::NONE, prev_moves_since_capture: 0};
+        }
         assert!(self.result == GameResult::Ongoing);
+        if !self.is_move_valid(mov) {
+            println!("Move is invalid: {:?}, {:?}", mov.from.xy(), mov.to.xy());
+            //crate::gui::run(*self).unwrap();
+        }
         assert!(self.is_move_valid(mov));
+        let prev_moves_since_capture = self.moves_since_capture;
         if self.square(mov.to).is_any {
             self.moves_since_capture = 0;
         } else {
@@ -375,12 +448,13 @@ impl TerraceGameState {
         if mov.to == Square::from_xy((0, 0)) && self.player_to_move.other() == Player::P2 {
             self.result = GameResult::P2WinInvasion;
         }
-        else if self.moves_since_capture >= 100 {
+        else if self.moves_since_capture >= Self::NO_CAPTURE_MOVES_TO_DRAW {
             self.result = GameResult::Draw50Moves;
         }
         UndoableMove {
             inner: mov,
-            capture
+            capture,
+            prev_moves_since_capture
         }
     }
     pub fn resignation(&mut self, player: Player) {
@@ -403,6 +477,11 @@ impl TerraceGameState {
     }
     pub fn is_move_valid(&self, mov: Move) -> bool {
         assert!(self.result == GameResult::Ongoing);
+        assert!(mov != Move::NONE);
+        if mov == Move::SKIP {
+            assert!(!self.has_legal_moves());
+            return true;
+        }
         let piece = self.square(mov.from);
         if !piece.is_player(self.player_to_move) {
             return false;
@@ -413,7 +492,6 @@ impl TerraceGameState {
         let height_to = mov.to.height();
         let (x1, y1) = mov.from.xy();
         let (x2, y2) = mov.to.xy();
-        // Horizontal slides are broken
         if height_from == height_to && mov.from != mov.to {
             if capture.is_any {
                 return false;
@@ -491,18 +569,11 @@ impl TerraceGameState {
         assert!(self.result == GameResult::Ongoing);
         for from_x in 0..8 {
             for from_y in 0..8 {
-                let from = Square::from_xy((from_x, from_y));
-                if self.square(from).is_player(self.player_to_move) {
-                    for to_x in 0..8 {
-                        for to_y in 0..8 {
-                            let to = Square::from_xy((to_x, to_y));
-                            let mov = Move {
-                                from,
-                                to
-                            };
-                            if self.is_move_valid(mov) {
-                                vec.push(mov);
-                            }
+                if self.square(Square::from_xy((from_x as u8, from_y as u8))).is_player(self.player_to_move) {
+                    let entry = (*POSSIBLE_MOVE_MAP)[from_x][from_y];
+                    for &mov in &entry.1[0..entry.0 as usize] {
+                        if self.is_move_valid(mov) {
+                            vec.push(mov);
                         }
                     }
                 }
@@ -516,8 +587,33 @@ impl TerraceGameState {
         self.move_number
     }
     pub fn undo_move(&mut self, mov: UndoableMove) {
+        if mov.inner == Move::SKIP {
+            self.player_to_move = self.player_to_move.other();
+            return;
+        }
         self.result = GameResult::Ongoing;
         *self.square_mut(mov.inner.from) = self.square(mov.inner.to);
         *self.square_mut(mov.inner.to) = mov.capture;
+        self.player_to_move = self.player_to_move.other();
+        self.move_number -= 1;
+        self.moves_since_capture = mov.prev_moves_since_capture;
+    }
+    pub fn has_legal_moves(&self) -> bool {
+        for x in 0..8 {
+            for y in 0..8 {
+                if self.square(Square::from_xy((x as u8, y as u8))).is_player(self.player_to_move) {
+                    let entry = POSSIBLE_MOVE_MAP[x][y];
+                    for &mov in &entry.1[0..entry.0 as usize] {
+                        if self.is_move_valid(mov) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+    pub fn is_transmutation(&self, other: &Self) -> bool {
+        self.board == other.board && self.player_to_move == other.player_to_move
     }
 }

@@ -1,0 +1,38 @@
+# Configuration for the automated training of networks
+
+# The folder which everything(nets, etc) will be stored in
+train-folder = "/media/supa/FastSSD/Databases/Terrace_Training/"
+# An optional file which the logs will be written to, defaults to none(stdout)
+log-file = "train-loop.log"
+# Whether to clear all previous data, networks, and graphs when starting a training session, defaults to false
+clear-data = true
+
+[networks]
+# The number of networks to train concurrently
+count = 2
+# The shape of the network, currently it is just an MLP network
+mlp-shape = [256]
+# The uuids of the networks to load at start, defaults to none, must have length 0 or count
+start-networks = []
+# If positive, trains new networks on random data, which is faster to generate than typical data. Defaults to 0
+epochs-on-random = 2
+# The number of evaluations allowed in the MCTS search for training games
+evaluations-per-move = 500
+
+[training]
+# The number of training iterations to run, defaults to unlimited.
+iterations = 1000
+# The number of times a network should be fed on a dataset
+data-epochs = 2
+# The number of threads to run when generating data
+data-generation-threads = 10
+# The number of datapoints to store in a file
+data-per-file = 4000
+# The number of files each thread should generate
+data-generation-rounds = 1
+# The maximum number of datapoints to use for a single GPU training batch. Note that twice this much may be on the GPU at any given point, though only one will have gradients generated.
+max-datapoints-trained-on = 100_000
+
+# Note that the optimizer used is an SGD optimizer
+learning-rate = 0.01
+momentum = 0.9
