@@ -40,7 +40,7 @@ fn main() {
                         println!("Running terrace GUI.");
                         gui::run(TerraceGameState::setup_new()).unwrap();
                     }
-                    #[cfg(feature = "ai")]
+                    /*#[cfg(feature = "ai")]
                     "gen-data" => {
                         println!("Generating data");
                         if args.len() < 3 {
@@ -67,7 +67,7 @@ fn main() {
                         println!("Training");
                         let config = ai::CURRENT_NETWORK_CONFIG.deref();
                         train_networks_old::<_, ai::AUTODIFF_BACKEND, ai::CURRENT_NETWORK_TYPE<ai::AUTODIFF_BACKEND>, _>("/media/supa/FastSSD/Databases/Terrace_Training/data/random/", 2, "./graphs", true, 1, &ai::DEVICE, move || {config.init(&ai::DEVICE)}, 0.01, 0.9);
-                    }
+                    }*/
                     #[cfg(feature = "ai")]
                     "train-loop" => {
                         println!("Starting training loop");
@@ -78,7 +78,7 @@ fn main() {
                         println!("Doing performance tests");
                         ai::do_perf_tests();
                     }
-                    #[cfg(feature = "ai")]
+                    /*#[cfg(feature = "ai")]
                     "elo-from-zero" => {
                         println!("Comparing");
                         let net = ai::CURRENT_NETWORK_CONFIG.init::<ai::BACKEND>(&ai::CPU);
@@ -120,7 +120,7 @@ fn main() {
                         println!("Pair elo: {} +/- {}", elo_diff, elo_range);
                         let (elo_diff, elo_range) = elo_comparison(results, EloComparisonMode::DecisivePairs, 0.95);
                         println!("Decisive pair elo: {} +/- {}", elo_diff, elo_range);
-                    }
+                    }*/
                     _ => println!("Unrecognized mode!")
                 };
             }

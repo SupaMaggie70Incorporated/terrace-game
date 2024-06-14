@@ -314,6 +314,7 @@ pub fn generate_data_multithreaded<P: AsRef<Path>, E: PositionEvaluate + 'static
         completed: 0,
         stop: false
     });
+    let _ = std::fs::create_dir_all(dir.as_ref());
     let mut threads = Vec::new();
     let state_ref = &state as *const _;
     let eval_ref = &eval as *const _;

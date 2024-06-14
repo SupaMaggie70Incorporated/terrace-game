@@ -139,8 +139,9 @@ pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
             app_state.selected_square = None;
             let mut mcts = MctsSearch::new(app_state.game_state, MctsSearchConfig {
                 stop_condition: MctsStopCondition::MaxTime(std::time::Duration::from_secs_f32(0.1)),
-                //stop_condition: MctsStopCondition::Evaluations(4000),
-                initial_list_size: 4096
+                initial_list_size: 4096,
+                use_value: true,
+                policy_deviance: 0.0
             }, &eval as *const _);
             let res = mcts.search();
             println!("Network has value {:?} after {} nodes", res.value, res.evaluations);
@@ -151,8 +152,9 @@ pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
             if app_state.game_state.result() == GameResult::Ongoing {
                 let mut mcts = MctsSearch::new(app_state.game_state, MctsSearchConfig {
                     stop_condition: MctsStopCondition::MaxTime(std::time::Duration::from_secs_f32(0.1)),
-                    //: MctsStopCondition::Evaluations(4000),
-                    initial_list_size: 4096
+                    initial_list_size: 4096,
+                    use_value: true,
+                    policy_deviance: 0.0
                 }, &RandomEvaluator::default() as *const _);
                 let res = mcts.search();
                 println!("Hce has value {:?} after {} nodes", res.value, res.evaluations);
@@ -168,7 +170,7 @@ pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
                 app_state.game_state.make_move(mov);
                 app_state.state_history.push(app_state.game_state);
                 app_state.state_index += 1;
-                if app_state.game_state.result() == GameResult::Ongoing {
+                /*if app_state.game_state.result() == GameResult::Ongoing {
                     cfg_if! {
                         if #[cfg(feature = "ai")] {
                             let mut mcts = MctsSearch::new(app_state.game_state, MctsSearchConfig {
@@ -180,7 +182,7 @@ pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
                             app_state.game_state.make_move(res.mov);
                         }
                     }
-                }
+                }*/
             } else {
                 println!("Illegal move");
             }

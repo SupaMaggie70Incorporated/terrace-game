@@ -17,7 +17,7 @@ use crate::ai::data::DataLoader;
 use crate::ai::eval::RandomEvaluator;
 use crate::ai::net::{Mlp, MlpConfig, NetworkEvaluator};
 
-use crate::mcts::MctsSearchConfig;
+use crate::mcts::{MctsSearchConfig, MctsStopCondition};
 
 use super::{data::load_data_from_file, compare::{compare_singlethreaded, elo_comparison}, net::Network, plot::{plot_elo_graphs, plot_loss_graph}, train::{train_on_data}};
 
@@ -51,8 +51,8 @@ pub fn train_networks_old<P: AsRef<Path>, B: AutodiffBackend, N: Network<B> + Au
         }
         bar.inc(1);
     }
-    for (i, (net, optim)) in networks.iter().enumerate() {
-        net.clone().save_file(format!("nets/net{}.bin", i), &*super::RECORDER).unwrap();
+    for (i, (net, optim)) in networks.into_iter().enumerate() {
+        net.save_file(format!("nets/net{}.bin", i), &*super::RECORDER).unwrap();
     }
     bar.finish();
 }
@@ -75,9 +75,6 @@ pub struct TrainLoopNetworkConfig {
     mlp_shape: Vec<usize>,
     #[serde(default)]
     start_networks: Vec<String>,
-    #[serde(default)]
-    epochs_on_random: usize,
-    evaluations_per_move: usize,
 }
 impl TrainLoopNetworkConfig {
     fn default_count() -> usize {1}
@@ -91,13 +88,24 @@ pub struct TrainLoopTrainConfig {
     data_generation_threads: usize,
     data_per_file: usize,
     data_generation_rounds: usize,
+    max_data_per_game: usize,
+    random_move_count: usize,
+    policy_deviance: f64,
+    mcts_use_value: bool,
     max_datapoints_trained_on: usize,
     learning_rate: f64,
-    momentum: f64
+    momentum: f64,
+
+    initial_data: Vec<String>,
+    initial_epochs: usize,
+    initial_learning_rate: f64,
+    initial_momentum: f64,
+    evaluations_allowed: usize,
 }
 impl TrainLoopTrainConfig {
     fn default_train_iterations() -> usize {usize::MAX}
 }
+/// We must replace to_device with saving and loading from a file, which is ridiculous
 struct NetworkInstance<B: AutodiffBackend, N: Network<B>> {
     cpu: N,
     dev: Option<N>,
@@ -131,6 +139,7 @@ impl<B: AutodiffBackend, N: Network<B>> NetworkInstance<B, N> {
     fn save_to_file<P: AsRef<Path>>(&self, train_folder: P) {
         let mut path = train_folder.as_ref().to_owned();
         path.push(format!("nets/{}.mpk", self.uuid));
+        println!("Saving file to path {:?}", &path);
         self.cpu.clone().save_file(path, &*ai::RECORDER).unwrap();
     }
     fn from_net(net: N, cpu: &B::Device) -> Self {
@@ -144,12 +153,13 @@ impl<B: AutodiffBackend, N: Network<B>> NetworkInstance<B, N> {
                 _p: Default::default()
             }
         } else {
+            println!("Network started on GPU");
             let uuid = Uuid::new_v4();
-            let dev = net;
-            let cpu = dev.clone().to_device(cpu);
+            let cpu = net.clone().fork(cpu);
+            let dev = Some(net);
             Self {
                 cpu,
-                dev: Some(dev),
+                dev,
                 uuid,
                 _p: Default::default()
             }
@@ -162,36 +172,39 @@ impl<B: AutodiffBackend, N: Network<B>> NetworkInstance<B, N> {
         if let Some(n) = &self.dev {
             n.clone()
         } else {
-            let n = self.cpu.clone().to_device(dev);
+            let n = self.cpu.clone().fork(dev);
             self.dev = Some(n.clone());
             n
         }
     }
     fn update_from_device(&mut self, cpu: &B::Device) {
-        self.cpu = self.dev.as_ref().unwrap().clone().to_device(cpu);
+        self.cpu = self.dev.as_ref().unwrap().clone().fork(cpu);
     }
     fn uuid(&self) -> Uuid {
         self.uuid
     }
 }
-pub fn train_networks<B: AutodiffBackend, N: Network<B> + AutodiffModule<B>>(nets: &mut [NetworkInstance<B, N>], data_subdirectory: &str, epochs: usize, config: &TrainLoopConfig, cpu: &B::Device, dev: &B::Device) {
-    let mut data_dir = PathBuf::from(&config.train_folder);
-    let mut graph_dir = data_dir.clone();
-    graph_dir.push("graphs");
-    data_dir.push(format!("data/{data_subdirectory}"));
+pub fn train_networks<B: AutodiffBackend, N: Network<B> + AutodiffModule<B>>(nets: &mut [NetworkInstance<B, N>], net_config: &N::Config, train_folder: &Path, data_subdirectory: &str, epochs: usize, learning_rate: f64, momentum: f64, cpu: &B::Device, dev: &B::Device) {
+    // Whats not the problem: graphs, data(folder and # of datapoints), what else could it be!?
+    let mut graph_dir: PathBuf = train_folder.to_owned();
     let mut networks = Vec::new();
     let mut network_histories: Vec<Vec<(f32, f32)>> = Vec::new();
-    for i in 0..config.networks.count {
+    let mut data_dir: PathBuf = graph_dir.clone();
+    data_dir.push(format!("data/{data_subdirectory}"));
+    graph_dir.push("graphs");
+    let (data_loader, set_count) = DataLoader::<B>::new(dev, data_dir, epochs);
+    for i in 0..nets.len() {
         let net = nets[i].dev_net(dev);
-        networks.push((net, SgdConfig::new().with_momentum(Some(MomentumConfig::new().with_momentum(config.training.momentum))).init()));
+        //let net = ai::CURRENT_NETWORK_CONFIG.init::<B>(cpu).to_device(dev);
+        //let net = ai::CURRENT_NETWORK_CONFIG.init(dev);
+        networks.push((net, SgdConfig::new().with_momentum(Some(MomentumConfig::new().with_momentum(momentum))).init()));
         network_histories.push(Vec::new());
     }
-    let (data_loader, set_count) = DataLoader::<B>::new(&dev, data_dir, epochs);
     let bar = ProgressBar::new(set_count as u64).with_style(ProgressStyle::with_template("[{elapsed_precise}] {msg} {bar:100.cyan/blue} {pos:>7}/{len:7}").unwrap()).with_message("Training networks");
     bar.set_position(0);
     for (iter, (inputs, targets)) in data_loader.enumerate() {
         for (i, (net, optim)) in networks.iter_mut().enumerate() {
-            let (n, value_loss, policy_loss) = train_on_data(dev, net.clone(), inputs.clone(), targets.clone(), optim, config.training.learning_rate);
+            let (n, value_loss, policy_loss) = train_on_data(dev, net.clone(), inputs.clone(), targets.clone(), optim, learning_rate);
             *net = n;
             network_histories[i].push((value_loss, policy_loss));
         }
@@ -199,20 +212,20 @@ pub fn train_networks<B: AutodiffBackend, N: Network<B> + AutodiffModule<B>>(net
     }
     bar.finish();
     for (i, (net, _)) in networks.into_iter().enumerate() {
+        let old_uuid = nets[i].uuid();
         let net = NetworkInstance::from_net(net, cpu);
-        let uuid = net.uuid();
-        net.save_to_file(&config.train_folder);
-        nets[i] = net;
-        graph_dir.push(format!("{uuid}.loss.svg"));
+        let new_uuid = net.uuid();
+        net.save_to_file(train_folder);
+        graph_dir.push(format!("{}.loss.svg", net.uuid()));
         plot_loss_graph(&graph_dir, &network_histories[i]);
         graph_dir.pop();
-        info!("")
+        info!("Trained network {new_uuid} from {old_uuid} on data {data_subdirectory}");
     }
 }
 pub fn training_loop() {
     type Backend = ai::AUTODIFF_BACKEND;
-    const CPU: burn::backend::candle::CandleDevice = ai::CPU;
-    const DEVICE: burn::backend::candle::CandleDevice = ai::DEVICE;
+    const CPU: burn::backend::libtorch::LibTorchDevice = ai::CPU;
+    const DEVICE: burn::backend::libtorch::LibTorchDevice = ai::DEVICE;
 
     let config = toml::from_str::<TrainLoopConfig>(&std::fs::read_to_string("config.toml").unwrap()).expect("Failed to parse config.toml:");
     let train_folder = PathBuf::from(&config.train_folder);
@@ -251,18 +264,33 @@ pub fn training_loop() {
         }
     } else {
         for _ in 0..config.networks.count {
-            nets.push(NetworkInstance::new(&net_config, &CPU));
+            let net = NetworkInstance::new(&net_config, &CPU);
+            info!("Created network {}", net.uuid());
+            nets.push(net);
         }
-        if config.networks.epochs_on_random != 0 {
+        for dataset in &config.training.initial_data {
             let train_start = Instant::now();
-            let mut data_dir = PathBuf::from(&train_folder);
-            data_dir.push("data/random");
-            train_networks(&mut nets, "random", config.networks.epochs_on_random, &config, &CPU, &DEVICE);
-            info!("Trained new networks on random data in {} seconds", (Instant::now() - train_start).as_secs_f32());
-        }
-        for net in &nets {
-            info!("Created network {}", net.uuid);
+            train_networks(&mut nets, &net_config, &train_folder, dataset, config.training.initial_epochs, config.training.initial_learning_rate, config.training.initial_momentum, &CPU, &DEVICE);
+            info!("Trained initial networks on dataset \"{dataset}\" in {} seconds", (Instant::now() - train_start).as_secs_f32());
         }
     }
     info!("Initialized networks in {} seconds", (Instant::now() - network_init_start).as_secs_f32());
+    for _ in 0..config.training.iterations {
+        println!("Starting data generation");
+        let iteration_start_time = Instant::now();
+        let data_uuid = Uuid::new_v4();
+        let eval = NetworkEvaluator::new(nets[0].cpu_net().valid());
+        let mut data_dir = train_folder.clone();
+        data_dir.push(format!("data/{data_uuid}"));
+        ai::data::generate_data_multithreaded(data_dir, config.training.data_generation_threads, Some(config.training.data_generation_threads * config.training.data_generation_rounds), true, eval, MctsSearchConfig {
+            stop_condition: MctsStopCondition::Evaluations(config.training.evaluations_allowed),
+            initial_list_size: config.training.evaluations_allowed + 4, // Probably +1 would be fine but I'm just gonna be stupid
+            use_value: config.training.mcts_use_value,
+            policy_deviance: config.training.policy_deviance as f32,
+        }, config.training.data_per_file, config.training.max_data_per_game, config.training.random_move_count);
+        info!("Generated dataset {data_uuid} in {} seconds", (Instant::now() - iteration_start_time).as_secs_f32());
+        let train_start = Instant::now();
+        train_networks(&mut nets, &net_config, &train_folder, &data_uuid.to_string(), config.training.initial_epochs, config.training.initial_learning_rate, config.training.initial_momentum, &CPU, &DEVICE);
+        info!("Trained networks on dataset {data_uuid} in {} seconds", (Instant::now() - train_start).as_secs_f32());
+    }
 }

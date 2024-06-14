@@ -3,6 +3,7 @@
 use std::{marker::PhantomData, panic::catch_unwind, sync::Mutex, time::{Duration, Instant}};
 
 use burn::tensor::backend::Backend;
+use rand::random;
 
 use crate::{ai::{eval::PositionEvaluate, net::{Network, NetworkOutput}}, rules::{self, AbsoluteGameResult, GameResult, Move, Player, TerraceGameState, ALL_POSSIBLE_MOVES}};
 pub struct MctsNode {
@@ -113,8 +114,7 @@ impl MctsNode {
 pub struct MctsSearch<E: PositionEvaluate> {
     /// The position of the game at the time of searching
     root_position: TerraceGameState,
-    /// The condition under which the search should terminate, for example after searching 20 positions
-    stop_condition: MctsStopCondition,
+    config: MctsSearchConfig,
     /// The list of all expanded nodes, with the index being used to identify them
     nodes: Vec<MctsNode>,
     /// The network or whatever is evaluating positions
@@ -124,7 +124,7 @@ impl<E: PositionEvaluate> MctsSearch<E> {
     pub fn new(root_position: TerraceGameState, config: MctsSearchConfig, eval: *const E) -> Self {
         Self {
             root_position,
-            stop_condition: config.stop_condition,
+            config,
             nodes: Vec::with_capacity(config.initial_list_size),
             eval,
         }
@@ -166,7 +166,7 @@ impl<E: PositionEvaluate> MctsSearch<E> {
         }
         loop {
             // Detect stop condition
-            match self.stop_condition {
+            match self.config.stop_condition {
                 MctsStopCondition::TotalEvaluations(num) => {
                     if self.nodes[0].num_visits >= num {
                         break;
@@ -232,25 +232,27 @@ impl<E: PositionEvaluate> MctsSearch<E> {
             }
         }
         let mut best_move = Move::NONE;
-        let mut best_num_visits = -1;
+        let mut best_num_visits = -f32::INFINITY;
         let mut best_value = f32::NEG_INFINITY;
         for index in &self.nodes[0].children {
             let node = &self.nodes[*index];
-            if false { // Select based on number of visits
-                if node.num_visits as isize > best_num_visits {
+            let num_visits = (1.0 + (random::<f32>() * 2.0 - 1.0) * self.config.policy_deviance) * node.num_visits as f32;
+            let value = (1.0 + (random::<f32>() * 2.0 - 1.0) * self.config.policy_deviance) * -evaluation_to_score(node.average_value());
+            if !self.config.use_value { // Select based on number of visits
+                if num_visits > best_num_visits {
                     best_move = node.mov;
-                    best_num_visits = node.num_visits as isize;
-                    best_value = evaluation_to_score(node.average_value());
-                } else if node.num_visits as isize == best_num_visits && -evaluation_to_score(node.average_value()) > best_value {
+                    best_num_visits = num_visits;
+                    best_value = value;
+                } else if num_visits == best_num_visits && value > best_value {
                     best_move = node.mov;
-                    best_num_visits = node.num_visits as isize;
-                    best_value = evaluation_to_score(node.average_value());
+                    best_num_visits = num_visits;
+                    best_value = value;
                 }
             } else { // Select based on value, we choose the lowest because it is evaluated from the POV of the opponent
-                if -evaluation_to_score(node.average_value()) > best_value {
+                if value > best_value {
                     best_move = node.mov;
-                    best_num_visits = node.num_visits as isize;
-                    best_value = -evaluation_to_score(node.average_value());
+                    best_num_visits = num_visits;
+                    best_value = value;
                 }
             }
         }
@@ -281,6 +283,8 @@ pub enum MctsStopCondition {
 pub struct MctsSearchConfig {
     pub stop_condition: MctsStopCondition,
     pub initial_list_size: usize,
+    pub use_value: bool,
+    pub policy_deviance: f32,
 }
 pub fn evaluation_to_score(eval: (f32, f32, f32)) -> f32 {
     let (win, draw, loss) = eval;

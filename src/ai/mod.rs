@@ -1,6 +1,6 @@
 use std::{path::Path, time::{Duration, Instant}};
 
-use burn::{backend::candle::CandleDevice, prelude::*, tensor::activation::softmax};
+use burn::{prelude::*, tensor::activation::softmax};
 use burn::record::CompactRecorder;
 use lazy_static::lazy_static;
 use eval::PositionEvaluate;
@@ -20,10 +20,14 @@ pub mod compare;
 
 const TRAINING_DATA_FOLDER: &str = "/media/FastSSD/Databases/Terrace_Training/";
 
-pub type BACKEND = burn::backend::Candle;
-pub type AUTODIFF_BACKEND = burn::backend::Autodiff<burn::backend::Candle>;
-pub const CPU: CandleDevice = burn::backend::candle::CandleDevice::Cpu;
-pub const DEVICE: CandleDevice = burn::backend::candle::CandleDevice::Cuda(0);
+pub type BACKEND = burn::backend::LibTorch;
+pub type AUTODIFF_BACKEND = burn::backend::Autodiff<burn::backend::LibTorch>;
+pub const CPU: burn::backend::libtorch::LibTorchDevice = burn::backend::libtorch::LibTorchDevice::Cpu;
+pub const DEVICE: burn::backend::libtorch::LibTorchDevice = burn::backend::libtorch::LibTorchDevice::Cuda(0);
+/*pub type BACKEND = burn::backend::Wgpu;
+pub type AUTODIFF_BACKEND = burn::backend::Autodiff<burn::backend::Wgpu>;
+pub const CPU: burn::backend::wgpu::WgpuDevice = burn::backend::wgpu::WgpuDevice::Cpu;
+pub const DEVICE: burn::backend::wgpu::WgpuDevice = burn::backend::wgpu::WgpuDevice::DiscreteGpu(0);*/
 
 //pub type CURRENT_NETWORK_CONFIG_TYPE = ResnetConfig;
 pub type CURRENT_NETWORK_CONFIG_TYPE = MlpConfig;
@@ -51,7 +55,6 @@ pub fn do_perf_tests() {
         ("Mlp [16, 16, 16]", MlpConfig::new(vec![16, 16, 16])),
         ("Mlp [64]", MlpConfig::new(vec![64])),
         ("Mlp [64, 64, 64]", MlpConfig::new(vec![64, 64, 64])),
-        
     ];
     let resnet_configs = vec![
         ("ResNet 4x1->1", ResnetConfig::new(4, 1, 1)),
