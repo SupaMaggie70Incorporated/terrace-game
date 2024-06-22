@@ -1,8 +1,10 @@
 use std::fs;
 use std::marker::PhantomData;
 
-use burn::{config::Config, module::{AutodiffModule, Module}, nn::{conv::{Conv2d, Conv2dConfig}, loss::CrossEntropyLossConfig, BatchNorm, BatchNormConfig, Linear, LinearConfig, Relu}, tensor::{activation::{relu, softmax}, backend::{AutodiffBackend, Backend}, Bool, Data, Float, Int, Shape, Tensor}};
-use crate::ai::eval::{PositionEvaluate};
+use burn::{config::Config, module::{AutodiffModule, Module}, nn::{conv::{Conv2d, Conv2dConfig}, loss::CrossEntropyLossConfig, BatchNorm, BatchNormConfig, Linear, LinearConfig, Relu}, record::Record, tensor::{activation::{relu, softmax}, backend::{AutodiffBackend, Backend}, Bool, Data, Float, Int, Shape, Tensor}};
+use once_cell::sync::Lazy;
+use regex::Regex;
+use crate::ai;
 
 use crate::rules::{self, AbsoluteGameResult, Piece, Player, Square, TerraceGameState, ALL_POSSIBLE_MOVES};
 
@@ -178,35 +180,15 @@ pub struct NetworkLoss<B: Backend> {
 pub(crate) trait Network<B: Backend>: Module<B> {
     fn forward(&self, x: NetworkInput<B>) -> NetworkOutput<B>;
     fn device(&self) -> B::Device;
+    fn save_to_file(&self, file: &str);
 
-    type Config;
-    fn init(cfg: &Self::Config, dev: &B::Device) -> Self;
+    type Config: NetworkConfig where Self: Sized;
+    fn init(cfg: &Self::Config, dev: &B::Device) -> Self where Self: Sized;
+    fn init_from_file(cfg: &Self::Config, dev: &B::Device, file: &str) -> Self where Self: Sized;
 }
-/// Wrapper class for networks that can be used for MCTS. A blanket implementation on networks would cause type restrictions
-#[derive(Clone)]
-pub struct NetworkEvaluator<B: Backend, N: Network<B> + Clone> {
-    pub inner: N,
-    _p: PhantomData<B>,
-}
-impl<B: Backend, N: Network<B> + Clone> NetworkEvaluator<B, N> {
-    pub fn new(inner: N) -> Self {
-        Self {
-            inner,
-            _p: Default::default()
-        }
-    }
-}
-impl<N: Network<B>, B: Backend> PositionEvaluate for NetworkEvaluator<B, N> {
-    fn evaluate_on_position(&self, state: &TerraceGameState) -> ([f32; 3], [f32; rules::NUM_POSSIBLE_MOVES]) {
-        let output = self.inner.forward(NetworkInput::<B>::from_state(state, &self.inner.device()));
-        let value = output.get_single_probabilities();
-        let policy = output.get_single_policies();
-        (value, policy)
-    }
-    fn evaluate_on_positions(&self, states: &[TerraceGameState]) -> Vec<([f32; 3], [f32; rules::NUM_POSSIBLE_MOVES])> {
-        let output = self.inner.forward(NetworkInput::<B>::from_states(states, &self.inner.device()));
-        output.get_values_policies()
-    }
+pub trait NetworkConfig {
+    //fn init<B: Backend>(&self, dev: &B::Device) -> NetworkEnum<B>;
+    //fn init_from_file<B: Backend>(&self, dev: &B::Device, file: &str) -> NetworkEnum<B>;
 }
 
 #[derive(Config, Debug)]
@@ -238,6 +220,14 @@ impl MlpConfig {
         }
     }
 }
+impl NetworkConfig for MlpConfig {
+    /*fn init<B: Backend>(&self, dev: &B::Device) -> NetworkEnum<B> {
+        NetworkEnum::Mlp(self.init::<B>(dev))
+    }
+    fn init_from_file<B: Backend>(&self, dev: &<B as Backend>::Device, file: &str) -> NetworkEnum<B> {
+        NetworkEnum::Mlp(self.init::<B>(dev).load_file(file, &*ai::RECORDER, dev).unwrap())
+    }*/
+}
 #[derive(Module, Debug)]
 pub struct Mlp<B: Backend> {
     layers: Vec<Linear<B>>,
@@ -266,10 +256,16 @@ impl<B: Backend> Network<B> for Mlp<B> {
     fn device(&self) -> B::Device {
         self.devices()[0].clone()
     }
+    fn save_to_file(&self, file: &str) {
+        self.clone().save_file(file, &*ai::RECORDER).unwrap();
+    }
     
     type Config = MlpConfig;
     fn init(cfg: &Self::Config, dev: &B::Device) -> Self {
         cfg.init(dev)
+    }
+    fn init_from_file(cfg: &Self::Config, dev: &<B as Backend>::Device, file: &str) -> Self where Self: Sized {
+        cfg.init(dev).load_file(file, &*ai::RECORDER, dev).unwrap()
     }
 }
 
@@ -305,6 +301,14 @@ impl ResnetConfig {
         }
     }
 }
+impl NetworkConfig for ResnetConfig {
+    /*fn init<B: Backend>(&self, dev: &B::Device) -> NetworkEnum<B> {
+        NetworkEnum::Resnet(self.init::<B>(dev))
+    }
+    fn init_from_file<B: Backend>(&self, dev: &<B as Backend>::Device, file: &str) -> NetworkEnum<B> {
+        NetworkEnum::Resnet(self.init::<B>(dev).load_file(file, &*ai::RECORDER, dev).unwrap())
+    }*/
+}
 #[derive(Module, Debug)]
 pub struct Resnet<B: Backend> {
     input_layer: Conv2d<B>,
@@ -339,10 +343,16 @@ impl<B: Backend> Network<B> for Resnet<B> {
     fn device(&self) -> <B as Backend>::Device {
         self.devices()[0].clone()
     }
+    fn save_to_file(&self, file: &str) {
+        self.clone().save_file(file, &*ai::RECORDER).unwrap();
+    }
 
     type Config = ResnetConfig;
     fn init(cfg: &Self::Config, dev: &B::Device) -> Self {
         cfg.init(dev)
+    }
+    fn init_from_file(cfg: &Self::Config, dev: &<B as Backend>::Device, file: &str) -> Self where Self: Sized {
+        cfg.init(dev).load_file(file, &*ai::RECORDER, dev).unwrap()
     }
 }
 #[derive(Module, Debug)]
@@ -371,4 +381,98 @@ impl<B: Backend> ResnetBlock<B> {
         x = relu(x);
         x
     }
+}
+#[derive(Debug, Module)]
+pub enum NetworkEnum<B: Backend> {
+    Mlp(Mlp<B>),
+    Resnet(Resnet<B>)
+}
+impl<B: Backend> NetworkEnum<B> {
+    pub fn load(desc: &str, dev: &B::Device, data_dir: &str) -> Self {
+        const FAIL_MESSAGE: &str = "Invalid format for network config";
+        let s_index = desc.chars().position(|a| a == ':').expect(FAIL_MESSAGE);
+        let cfg = NetworkConfigEnum::parse(desc[s_index + 1..].trim());
+        let net = cfg.init_from_file(dev, &format!("{data_dir}/nets/{}", desc[0..s_index].trim()));
+        net
+    }
+}
+impl<B: Backend> Network<B> for NetworkEnum<B> {
+    fn device(&self) -> <B as Backend>::Device {
+        match self {
+            Self::Mlp(s) => s.device(),
+            Self::Resnet(s) => s.device(),
+        }
+    }
+    fn forward(&self, x: NetworkInput<B>) -> NetworkOutput<B> {
+        match self {
+            Self::Mlp(s) => s.forward(x),
+            Self::Resnet(s) => s.forward(x),
+        }
+    }
+    
+    fn save_to_file(&self, file: &str) {
+        match self {
+            Self::Mlp(s) => s.save_to_file(file),
+            Self::Resnet(s) => s.save_to_file(file)
+        }
+    }
+    type Config = NetworkConfigEnum where Self: Sized;
+    fn init(cfg: &Self::Config, dev: &<B as Backend>::Device) -> Self where Self: Sized {
+        cfg.init(dev)
+    }
+    fn init_from_file(cfg: &Self::Config, dev: &<B as Backend>::Device, file: &str) -> Self where Self: Sized {
+        cfg.init(dev).load_file(file, &*ai::RECORDER, dev).unwrap()
+    }
+}
+#[derive(Clone, Debug)]
+pub enum NetworkConfigEnum {
+    Mlp(MlpConfig),
+    Resnet(ResnetConfig)
+}
+impl NetworkConfigEnum {
+    pub fn parse(desc: &str) -> Self {
+        const FAIL_MESSAGE: &str = "Invalid format for network config";
+        let s_index = desc.chars().position(|a| a == ' ').expect(FAIL_MESSAGE);
+        assert!(s_index + 1 < desc.len());
+        let main = &desc[s_index + 1..];
+        match &desc[0..s_index] {
+            "mlp" => {
+                let trimmed = main.trim().trim_matches(|c| c == '[' || c == ']');
+
+                let mut vec = Vec::new();
+                for element in trimmed.split(',') {
+                    let number = element.trim().parse().expect(FAIL_MESSAGE);
+                    vec.push(number);
+                }
+                Self::Mlp(MlpConfig::new(vec))
+            }
+            "resnet" => {
+                static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\d+)x(\d+)->(\d+)").unwrap());
+                let captures = RE.captures(main).expect(FAIL_MESSAGE);
+                let (_, [a, b, c]) = captures.extract();
+                let a = a.parse().unwrap();
+                let b = b.parse().unwrap();
+                let c = c.parse().unwrap();
+                Self::Resnet(ResnetConfig::new(a, b, c))
+            },
+            a => panic!("Unrecognized network config type: {a}, must be one of {{ mlp | resnet }}")
+        }
+    }
+}
+impl NetworkConfigEnum {
+    pub fn init<B: Backend>(&self, dev: &B::Device) -> NetworkEnum<B> {
+        match self {
+            Self::Mlp(s) => NetworkEnum::Mlp(s.init(dev)),
+            Self::Resnet(s) => NetworkEnum::Resnet(s.init(dev))
+        }
+    }
+    pub fn init_from_file<B: Backend>(&self, dev: &B::Device, file: &str) -> NetworkEnum<B> {
+        match self {
+            Self::Mlp(s) => NetworkEnum::Mlp(Mlp::init_from_file(s, dev, file)),
+            Self::Resnet(s) => NetworkEnum::Resnet(Resnet::init_from_file(s, dev, file))
+        }
+    }
+}
+impl NetworkConfig for NetworkConfigEnum {
+
 }

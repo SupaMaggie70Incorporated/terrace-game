@@ -1,50 +1,82 @@
-# Configuration for the automated training of networks
 
 # The folder which everything(nets, etc) will be stored in
-train-folder = "/media/supa/FastSSD/Databases/Terrace_Training/"
-# An optional file which the logs will be written to, defaults to none(stdout)
-log-file = "train-loop.log"
-# Whether to clear all previous data, networks, and graphs when starting a training session, defaults to false
-clear-data = false
+train-folder = "/media/supa/FastSSD/terrace-training"
+# The number of threads to use for parallel tasks
+threads = 10
+network-config = "resnet 16x1->4"
+# network-config = "mlp [512,512]"
+# Whether or not to run the network on the cpu when playing games
+cpu-inference = true
 
-[networks]
-# The number of networks to train concurrently
-count = 1
-# The shape of the network, currently it is just an MLP network
-mlp-shape = [256]
+# Configuration for the automated training of networks
+[train-loop]
+# An optional file which the logs will be written to, defaults to none(create a log in the sessions folder)
+log-file = ""
+
+[train-loop.networks]
+# The number of networks to train concurrently, for data generation the previous generation networks will also be used but only this many will be trained on or moved forward
+count = 3 # I hate setting this to an odd number
 # The uuids of the networks to load at start, defaults to none, must have length 0 or count
 start-networks = []
 
-[training]
+[train-loop.training]
 # The number of training iterations to run, defaults to unlimited.
 iterations = 1000
-
-# The number of threads to run when generating data
-data-generation-threads = 10
-# The number of datapoints to store in a file
-data-per-file = 4000
-# The number of files each thread should generate
-data-generation-rounds = 1
+# The total number of games will be 2*pairs-per-matchup*(2*count)^2=8*pairs-per-matchup*count, whether or not this is a multiple of #threads is unimportant due to randomness factors and tiny cost per game
+# With this current setup there will be 1024 games per training iteration
+pairs-per-matchup = 8
+# The number of datapoints per normal file, less for the final for each thread
+max-data-per-file = 2048
 # The maximum number of datapoints to extract from a game, too little and it will take too long, too much and the dataset will overaccount for longer games
-max-data-per-game = 96
+max-data-per-game = 192
 # The number of random moves to be played before the network starts playing the game itself
 random-move-count = 32
 # The number of evaluations per move in games generated for training data
 evaluations-allowed = 250
 # A random number chosen between (-x, x) will be multiplied into the policies, changing which ones are most likely to be played slightly
+# When mcts-use-value is set, instead of being multiplied it will be added to the value
 policy-deviance = 0.1
 mcts-use-value = true
 
 # The maximum number of datapoints to use for a single GPU training batch. Note that twice this much may be on the GPU at any given point, though only one will have gradients generated.
-max-datapoints-trained-on = 100_000
+max-data-per-batch = 25_000
+
+# Compared to initial values, data-epochs likely should be lower,
+# learning rate maybe higher though lower to preserve existing knowledge maybe should be lower, and momentum is largely a mystery
 # The number of times a network should be fed on a dataset
 data-epochs = 2
 # Note that the optimizer used is an SGD optimizer
 learning-rate = 0.02
-momentum = 0.9
+momentum = 0.8
 
 # These are related to the initial training, e.g. on random data
-initial-data = ["random"]
-initial-epochs = 4
+initial-data = ["pregenerated/hce-10m"]
+initial-epochs = 1
 initial-learning-rate = 0.01
-initial-momentum = 0.9
+initial-momentum = 0.95
+
+[train-loop.compare]
+# The number of iterations per compare, 0 means no comparisons, 1 means a comparison every iteration, 2 means every other etc
+initial-compare = true
+# The number of networks
+compare-0elo-networks = 1
+# Whether or not to compare the current best and previous best networks
+compare-previous = true
+
+random-move-count = 32
+evaluations-allowed = 500
+policy-deviance = 0.1
+mcts-use-value = true
+# Number of pairs per comparison. Should ideally be a multiple of the number of threads. If this number is 60, and every iteration you compare 0elo and previous, you will end up comparing 2*60 pairs = 2*120 games = 240 games
+pair-count = 120
+
+[data-gen]
+evaluators = ["hce", "random"]
+dataset-name = "test/test1"
+mcts-evaluations = 500
+mcts-use-value = true
+policy-deviance = 0.25
+max-data-per-game = 128
+num-rand-moves = 32
+pairs-per-matchup = 100_000
+datapoints-per-file = 1_000_000

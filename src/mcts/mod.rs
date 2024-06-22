@@ -5,7 +5,7 @@ use std::{marker::PhantomData, panic::catch_unwind, sync::Mutex, time::{Duration
 use burn::tensor::backend::Backend;
 use rand::random;
 
-use crate::{ai::{eval::PositionEvaluate, net::{Network, NetworkOutput}}, rules::{self, AbsoluteGameResult, GameResult, Move, Player, TerraceGameState, ALL_POSSIBLE_MOVES}};
+use crate::{ai::{eval::Evaluator, net::{Network, NetworkOutput}}, rules::{self, AbsoluteGameResult, GameResult, Move, Player, TerraceGameState, ALL_POSSIBLE_MOVES}};
 pub struct MctsNode {
     mov: Move,
     num_visits: usize,
@@ -30,7 +30,7 @@ impl MctsNode {
         // The +1 comes from the first search we do. Starting with num_visits=1 would mess up the policy exploration calculations, though not by any substantial amount
         (self.total_value.0 / self.num_visits as f32, self.total_value.1 / self.num_visits as f32, self.total_value.2 / self.num_visits as f32)
     }
-    pub fn select_child<E: PositionEvaluate>(&self, ctx: *const MctsSearch<E>) -> usize {
+    pub fn select_child<B: Backend>(&self, ctx: *const MctsSearch<B>) -> usize {
         assert!(self.expandable_moves.len() == 0);
         assert!(!self.is_terminal);
         assert!(self.children.len() > 0);
@@ -50,7 +50,7 @@ impl MctsNode {
         assert!(best_ucb != -f32::INFINITY); // If this is false, then there is some problem causing a negative infinity ucb score
         best_child
     }
-    pub fn expand<E: PositionEvaluate>(&mut self, ctx: *mut MctsSearch<E>, eval: &E, mut state: TerraceGameState, transmutations: &[TerraceGameState]) -> (f32, f32, f32) {
+    pub fn expand<B: Backend>(&mut self, ctx: *mut MctsSearch<B>, eval: &Evaluator<B>, mut state: TerraceGameState, transmutations: &[TerraceGameState]) -> (f32, f32, f32) {
         assert!(self.expandable_moves.len() > 0);
         let search = unsafe {&mut *ctx};
         let (mov, policy) = self.expandable_moves.pop().unwrap(); // We have already sorted it to maximize speed
@@ -111,17 +111,17 @@ impl MctsNode {
         value
     }
 }
-pub struct MctsSearch<E: PositionEvaluate> {
+pub struct MctsSearch<B: Backend> {
     /// The position of the game at the time of searching
     root_position: TerraceGameState,
     config: MctsSearchConfig,
     /// The list of all expanded nodes, with the index being used to identify them
     nodes: Vec<MctsNode>,
     /// The network or whatever is evaluating positions
-    eval: *const E,
+    eval: *const Evaluator<B>,
 }
-impl<E: PositionEvaluate> MctsSearch<E> {
-    pub fn new(root_position: TerraceGameState, config: MctsSearchConfig, eval: *const E) -> Self {
+impl<B: Backend> MctsSearch<B> {
+    pub fn new(root_position: TerraceGameState, config: MctsSearchConfig, eval: *const Evaluator<B>) -> Self {
         Self {
             root_position,
             config,
@@ -237,7 +237,8 @@ impl<E: PositionEvaluate> MctsSearch<E> {
         for index in &self.nodes[0].children {
             let node = &self.nodes[*index];
             let num_visits = (1.0 + (random::<f32>() * 2.0 - 1.0) * self.config.policy_deviance) * node.num_visits as f32;
-            let value = (1.0 + (random::<f32>() * 2.0 - 1.0) * self.config.policy_deviance) * -evaluation_to_score(node.average_value());
+            //let value = (1.0 + (random::<f32>() * 2.0 - 1.0) * self.config.policy_deviance) * -evaluation_to_score(node.average_value());
+            let value = ((random::<f32>() * 2.0 - 1.0) * self.config.policy_deviance).clamp(-1.0, 1.0) - evaluation_to_score(node.average_value());
             if !self.config.use_value { // Select based on number of visits
                 if num_visits > best_num_visits {
                     best_move = node.mov;

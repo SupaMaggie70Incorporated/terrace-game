@@ -1,1 +1,7 @@
-One night project to make an app for terrace the board game. Looks kinda bad at first but I at least got used to it. No end game screen currently, as I made it in one night(stayed up til 1AM).
+# Todo
+* Optimize the CPU network to use boolean operations, as well as potentially other NNUE derived tricks
+* Optimize the GPU network calls so that at least a few hundred can run per second
+* Enable multithreading for the MCTS
+* Enable multithreading for compare
+* Enabling generating games from multiple nets/evaluators
+* Tournament system to determine which networks are used to generate training games

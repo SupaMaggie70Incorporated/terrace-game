@@ -24,14 +24,15 @@ pub fn plot_elo_graphs<P: AsRef<Path>>(file: P, steps: &[(f32, f32, f32)]) {
         .y_label_style(label_style)
         .draw()
         .unwrap();
-    chart.draw_series(LineSeries::new(steps.iter().enumerate().map(|(i, v)| {(i, v.0)}),
-    ShapeStyle::from(&BLUE).stroke_width(2)
-    )).unwrap();
+    // Important to put the blue line last so that it isnt overwritten when they overlap
     chart.draw_series(LineSeries::new(steps.iter().enumerate().map(|(i, v)| {(i, v.1)}),
     ShapeStyle::from(&RED).stroke_width(2)
     )).unwrap();
     chart.draw_series(LineSeries::new(steps.iter().enumerate().map(|(i, v)| {(i, v.2)}),
     ShapeStyle::from(&RED).stroke_width(2)
+    )).unwrap();
+    chart.draw_series(LineSeries::new(steps.iter().enumerate().map(|(i, v)| {(i, v.0)}),
+    ShapeStyle::from(&BLUE).stroke_width(2)
     )).unwrap();
     root.present().unwrap();
 }
@@ -70,4 +71,7 @@ pub fn plot_loss_graph<P: AsRef<Path>>(file: P, losses: &[(f32, f32)]) {
                                       ShapeStyle::from(&GREEN).stroke_width(2)
     )).unwrap();
     root.present().unwrap();
+}
+pub fn plot_net_perf<P: AsRef<Path>>(file: P, perfs: Vec<(&str, f32, f32)>) {
+    
 }

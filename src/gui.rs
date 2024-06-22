@@ -1,11 +1,12 @@
 use std::io::Read;
 use burn::module::Module;
+use burn::tensor::backend::Backend;
 use cfg_if::cfg_if;
 
 use rand::Rng;
 use slint::{Color, Image, Model, ModelExt, ModelRc, SharedPixelBuffer, VecModel};
 use image::EncodableLayout;
-use crate::ai::eval::{HceEvaluator, RandomEvaluator};
+use crate::ai::eval::Evaluator;
 use crate::mcts::{MctsSearch, MctsSearchConfig, MctsStopCondition};
 
 use crate::rules::{self, GameResult, Move, Square, TerraceGameState};
@@ -79,7 +80,7 @@ struct AppState {
     ui: AppWindow,
 }
 
-pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
+pub fn run(game_state: TerraceGameState, eval: Option<Evaluator<impl Backend>>) -> Result<(), slint::PlatformError> {
     let ui = AppWindow::new()?;
 
     let mut app_state = AppState {
@@ -118,13 +119,6 @@ pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
     style.set_p2_piece_color(slint::Brush::SolidColor(Color::from_rgb_u8(0, 0, 0x80)));
     style.set_highlight_color(slint::Brush::SolidColor(Color::from_argb_u8(0xff, 0x90, 0x90, 0x90)));
     style.set_selection_color(slint::Brush::SolidColor(Color::from_argb_u8(0x80, 0x00, 0x80, 0x80)));
-    #[cfg(feature = "ai")]
-    let eval = {
-        let net = crate::ai::CURRENT_NETWORK_CONFIG.init::<crate::ai::BACKEND>(&crate::ai::CPU);
-        let net = net.load_file("nets/net0.mpk", &*crate::ai::RECORDER, &crate::ai::CPU).unwrap();
-        let eval = crate::ai::net::NetworkEvaluator::new(net);
-        eval
-    };
     logic.on_left_click(move |x, y| {
         let app_state = unsafe {&mut *app_state_ptr};
         if app_state.game_state.result() != GameResult::Ongoing && app_state.state_index == app_state.state_history.len() - 1 {
@@ -136,32 +130,20 @@ pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
         }
         else if cfg!(feature="ai") {
             println!("Making move");
-            app_state.selected_square = None;
-            let mut mcts = MctsSearch::new(app_state.game_state, MctsSearchConfig {
-                stop_condition: MctsStopCondition::MaxTime(std::time::Duration::from_secs_f32(0.1)),
-                initial_list_size: 4096,
-                use_value: true,
-                policy_deviance: 0.0
-            }, &eval as *const _);
-            let res = mcts.search();
-            println!("Network has value {:?} after {} nodes", res.value, res.evaluations);
-            app_state.game_state.make_move(res.mov);
-            app_state.state_history.push(app_state.game_state);
-            app_state.state_index += 1;
-            copy_board(&app_state.game_state, app_state.ui.global::<GameState>().get_board());
             if app_state.game_state.result() == GameResult::Ongoing {
-                let mut mcts = MctsSearch::new(app_state.game_state, MctsSearchConfig {
-                    stop_condition: MctsStopCondition::MaxTime(std::time::Duration::from_secs_f32(0.1)),
-                    initial_list_size: 4096,
-                    use_value: true,
-                    policy_deviance: 0.0
-                }, &RandomEvaluator::default() as *const _);
-                let res = mcts.search();
-                println!("Hce has value {:?} after {} nodes", res.value, res.evaluations);
-                app_state.game_state.make_move(res.mov);
-                app_state.state_history.push(app_state.game_state);
-                app_state.state_index += 1;
-                copy_board(&app_state.game_state, app_state.ui.global::<GameState>().get_board());
+                if let Some(eval) = &eval {
+                    let res = eval.find_best_value(app_state.game_state, 0.05);
+                    //println!("Computer has value {:?}", res.value);
+                    app_state.game_state.make_move(res);
+                    app_state.state_history.push(app_state.game_state);
+                    app_state.state_index += 1;
+                    /*if app_state.game_state.result() == GameResult::Ongoing {
+                        app_state.game_state.make_move(RandomEvaluator::default().find_best_value(app_state.game_state, 0.0));
+                        app_state.state_history.push(app_state.game_state);
+                        app_state.state_index += 1;
+                    }*/
+                    copy_board(&app_state.game_state, app_state.ui.global::<GameState>().get_board());
+                }
             }
         } else if let Some(from) = app_state.selected_square {
             let to = Square::from((x as u8, y as u8));
@@ -170,19 +152,21 @@ pub fn run(game_state: TerraceGameState) -> Result<(), slint::PlatformError> {
                 app_state.game_state.make_move(mov);
                 app_state.state_history.push(app_state.game_state);
                 app_state.state_index += 1;
-                /*if app_state.game_state.result() == GameResult::Ongoing {
+                if app_state.game_state.result() == GameResult::Ongoing {
                     cfg_if! {
                         if #[cfg(feature = "ai")] {
-                            let mut mcts = MctsSearch::new(app_state.game_state, MctsSearchConfig {
+                            /*let mut mcts = MctsSearch::new(app_state.game_state, MctsSearchConfig {
                                 stop_condition: MctsStopCondition::MaxTime(std::time::Duration::from_secs_f32(1.0)),
                                 initial_list_size: 8192
-                            }, &eval as *const _);
-                            let res = mcts.search();
-                            println!("Computer has value {:?}", res.value);
-                            app_state.game_state.make_move(res.mov);
+                            }, &eval as *const _);*/
+                            /*if let Some(eval) = eval {
+                                let res = eval.find_best_value(app_state.game_state);
+                                //println!("Computer has value {:?}", res.value);
+                                app_state.game_state.make_move(res);
+                            }*/
                         }
                     }
-                }*/
+                }
             } else {
                 println!("Illegal move");
             }

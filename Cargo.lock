@@ -5781,6 +5781,7 @@ version = "0.1.0"
 dependencies = [
  "burn",
  "cfg-if",
+ "chrono",
  "csv",
  "env_logger",
  "flate2",
@@ -5788,8 +5789,10 @@ dependencies = [
  "indicatif",
  "lazy_static",
  "log",
+ "once_cell",
  "plotters",
  "rand",
+ "regex",
  "serde",
  "slint",
  "slint-build",

@@ -4,12 +4,14 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use burn::{data, tensor::backend::Backend};
 use burn::prelude::{Bool, Data, Int, Shape, Tensor};
 use indicatif::{ProgressBar, ProgressStyle};
-use rand::{seq::SliceRandom, Rng};
+use rand::{seq::SliceRandom, Rng, thread_rng};
+use serde::Deserialize;
+use uuid::Uuid;
 
-use crate::{mcts::{MctsSearch, MctsSearchConfig}, rules::{AbsoluteGameResult, GameResult, Move, Piece, PieceType, Player, Square, TerraceGameState}, rules};
+use crate::{mcts::{MctsSearch, MctsSearchConfig}, rules::{AbsoluteGameResult, GameResult, Move, Piece, PieceType, Player, Square, TerraceGameState}, rules, SendablePointer};
 use crate::ai::net::{INPUT_CHANNELS, POLICY_OUTPUT_SIZE};
 
-use super::{eval::PositionEvaluate, net::{Network, NetworkInput, NetworkTarget}};
+use super::{eval::Evaluator, net::{Network, NetworkInput, NetworkTarget}};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PositionInfo {
@@ -230,7 +232,7 @@ pub fn generate_random_data_multithreaded<P: AsRef<Path>>(dir: P, thread_count: 
         thread.join().unwrap();
     }
 }
-pub fn generate_data<P: AsRef<Path>, E: PositionEvaluate>(path: P, eval: &E, mcts_config: MctsSearchConfig, datapoint_count: usize, max_datapoints_per_game: usize, num_rand_moves: usize, show_progress: bool) -> Result<(), std::io::Error> {
+/*pub fn generate_data<P: AsRef<Path>, E: PositionEvaluate>(path: P, eval: &E, mcts_config: MctsSearchConfig, datapoint_count: usize, max_datapoints_per_game: usize, num_rand_moves: usize, show_progress: bool) -> Result<(), std::io::Error> {
     let file = File::create(path)?;
     let mut writer = BufWriter::new(file);
     let mut mov_vec = Vec::new();
@@ -268,9 +270,12 @@ pub fn generate_data<P: AsRef<Path>, E: PositionEvaluate>(path: P, eval: &E, mct
             } else if mov_vec.len() == 1 {
                 mov_vec[0]
             } else {
-                let mut mcts = MctsSearch::new(state, mcts_config, eval as *const _);
-                let mov = mcts.search().mov;
-                mov
+                if crate::USE_MCTS {
+                    let mut mcts = MctsSearch::new(state, mcts_config, eval as *const _);
+                    mcts.search().mov
+                } else {
+                    eval.find_best_value(state)
+                }
             };
             states_vec.push((state, mov));
             state.make_move(mov);
@@ -289,56 +294,185 @@ pub fn generate_data<P: AsRef<Path>, E: PositionEvaluate>(path: P, eval: &E, mct
     bar.finish();
     writer.flush()?;
     Ok(())
+}*/
+/// All measurements for completeness will be in pairs
+pub struct TournamentState {
+    required: usize,
+    current: usize,
+    current_file_index: usize,
+    completed: usize,
+    scores: Vec<usize>,
+    draw_count: usize,
+    stop: bool,
 }
-fn data_writer_thread<E: PositionEvaluate>(mut folder: PathBuf, state: &Mutex<MultithreadedDataCollectionState>, eval: E, mcts_config: MctsSearchConfig, datapoints_per_file: usize, max_datapoints_per_game: usize, num_rand_moves: usize) {
+fn tournament_thread(mut dir: PathBuf, max_datapoints_per_file: usize, shared_state: &Mutex<TournamentState>, evals: SendablePointer<Vec<Evaluator<impl Backend>>>, mcts_config: MctsSearchConfig, max_datapoints_per_game: usize, num_rand_moves: usize) {
+    let evals = unsafe {&*evals.inner};
+    //let mut file_writer = BufWriter::new(File::create(file).unwrap());
+    // Anything to get it to build
+    #[cfg(unix)]
+    let mut file_writer = BufWriter::new(File::open("/dev/null").unwrap());
+    #[cfg(not(unix))]
+    let mut file_writer = BufWriter::new(File::create(format!("{}/{}.bin", std::env::temp_dir(), Uuid::new_v4())));
+    let mut datapoints_written = max_datapoints_per_file;
+    let mut lock = shared_state.lock().unwrap();
+    let required = lock.required;
+    let mut i = lock.current; // The modulus ensures that we can properly use the division as an index into evals
+    lock.current += 1;
+    drop(lock);
+    let mut mov_vec = Vec::new();
+    let mut states_vec = Vec::new();
     loop {
-        let mut lock = state.lock().unwrap();
-        if Some(lock.current) == lock.required || lock.stop {
+        let eval1_index = (i / evals.len()) % evals.len();
+        let eval2_index = i % evals.len();
+        let eval1 = &evals[eval1_index];
+        let eval2 = &evals[eval2_index];
+        // The score is doubled, for example a draw awards 1 point while a win awards 2
+        let mut net1_score = 0;
+        let mut net2_score = 0;
+        let mut draws = 0;
+
+        let mut pair_start = TerraceGameState::setup_new();
+        loop {
+            let mut success = true;
+            for i in 0..num_rand_moves {
+                if pair_start.result() != GameResult::Ongoing {
+                    success = false;
+                    break;
+                }
+                mov_vec.clear();
+                pair_start.generate_moves(&mut mov_vec);
+                if mov_vec.len() == 0 {
+                    success = false;
+                    break;
+                }
+                pair_start.make_move(mov_vec[rand::thread_rng().gen_range(0..mov_vec.len())]);
+            };
+            if success {
+                break;
+            } else {
+                pair_start = TerraceGameState::setup_new();
+            }
+        }
+        for is_second_game in [false, true] {
+            let mut state = pair_start;
+            states_vec.clear();
+            while state.result() == GameResult::Ongoing {
+                mov_vec.clear();
+                state.generate_moves(&mut mov_vec);
+                let mov = if mov_vec.len() == 0 {
+                    Move::SKIP
+                } else if mov_vec.len() == 1 {
+                    mov_vec[0]
+                } else {
+                    if is_second_game == (state.player_to_move() == Player::P2) {
+                        if crate::USE_MCTS {
+                            let mut mcts = MctsSearch::new(state, mcts_config, eval1 as *const _);
+                            mcts.search().mov
+                        } else {
+                            eval1.find_best_value(state, mcts_config.policy_deviance)
+                        }
+                    } else {
+                        if crate::USE_MCTS {
+                            let mut mcts = MctsSearch::new(state, mcts_config, eval2 as *const _);
+                            mcts.search().mov
+                        } else {
+                            eval2.find_best_value(state, mcts_config.policy_deviance)
+                        }
+                    }
+                };
+                if mov != Move::SKIP {
+                    states_vec.push((state, mov));
+                }
+                state.make_move(mov);
+            }
+            let mut result = state.result().into_absolute();
+            if states_vec.len() > max_datapoints_per_game {
+                states_vec.shuffle(&mut thread_rng());
+            }
+            for i in 0..max_datapoints_per_game.min(states_vec.len()) {
+                if datapoints_written >= max_datapoints_per_file {
+                    datapoints_written = 0;
+                    let mut lock = shared_state.lock().unwrap();
+                    let index = lock.current_file_index;
+                    lock.current_file_index += 1;
+                    drop(lock);
+
+                    dir.push(format!("{index}.bin"));
+                    file_writer = BufWriter::new(File::create(&dir).unwrap());
+                    dir.pop();
+                }
+                file_writer.write_all(&PositionInfo::new(states_vec[i].0, result, states_vec[i].1).bytes).unwrap();
+                datapoints_written += 1;
+            }
+            if is_second_game {
+                result = result.other();
+            }
+            match result {
+                AbsoluteGameResult::P1Win => {
+                    net1_score += 2;
+                }
+                AbsoluteGameResult::Draw => {
+                    net1_score += 1;
+                    net2_score += 1;
+                    draws += 1;
+                }
+                AbsoluteGameResult::P2Win => {
+                    net2_score += 2;
+                }
+            }
+        }
+        let mut lock = shared_state.lock().unwrap();
+        lock.completed += 1;
+        // This includes against itself which will always even out, but thats fine
+        lock.scores[eval1_index] += net1_score;
+        lock.scores[eval2_index] += net2_score;
+        lock.draw_count += draws;
+        if lock.current >= lock.required || lock.stop {
             break;
         }
-        let i = lock.current;
+        i = lock.current;
         lock.current += 1;
         drop(lock);
-        folder.push(format!("{i}.bin"));
-        generate_data(&folder, &eval, mcts_config, datapoints_per_file, max_datapoints_per_game, num_rand_moves, false).unwrap();
-        folder.pop();
-        let mut lock = state.lock().unwrap();
-        lock.completed += 1;
-        drop(lock);
     }
+    file_writer.flush().unwrap();
 }
-pub fn generate_data_multithreaded<P: AsRef<Path>, E: PositionEvaluate + 'static>(dir: P,thread_count: usize, num_files: Option<usize>, show_progress: bool, eval: E, mcts_config: MctsSearchConfig, datapoint_count: usize, max_datapoints_per_game: usize, num_rand_moves: usize) {
-    let state = Mutex::new(MultithreadedDataCollectionState {
-        required: num_files,
+/// Runs a data generation tournament and returns the scores of all participants
+pub fn multithreaded_tournament<P: AsRef<Path>>(dir: P, thread_count: usize, max_datapoints_per_file: usize, show_progress: bool, evals: Vec<Evaluator<impl Backend>>, mcts_config: MctsSearchConfig, max_datapoints_per_game: usize, num_rand_moves: usize, num_pairs_per_matchup: usize) -> (Vec<usize>, usize, usize) {
+    let mut scores = Vec::with_capacity(evals.len());
+    for _ in 0..evals.len() {
+        scores.push(0);
+    }
+    let total_pairs = num_pairs_per_matchup * evals.len() * evals.len();
+    let state = Mutex::new(TournamentState {
+        required: total_pairs,
         current: 0,
+        current_file_index: 0,
         completed: 0,
+        scores,
+        draw_count: 0,
         stop: false
     });
-    let _ = std::fs::create_dir_all(dir.as_ref());
+    std::fs::create_dir_all(dir.as_ref()).expect(&format!("Failed to create directory: {}", dir.as_ref().display()));
     let mut threads = Vec::new();
     let state_ref = &state as *const _;
-    let eval_ref = &eval as *const _;
+    let eval_ref = SendablePointer {inner: &evals as *const Vec<_>};
     for i in 0..thread_count {
-        let folder = dir.as_ref().to_owned();
+        let file = dir.as_ref().to_owned();
+        //file.push(format!("{i}.bin"));
         let state_ref = unsafe {&*state_ref};
-        let eval = eval.clone();
+        //let eval_ref: &'static _ = unsafe {&*eval_ref};
         threads.push(thread::spawn(move || {
-            data_writer_thread(folder, state_ref, eval, mcts_config, datapoint_count, max_datapoints_per_game, num_rand_moves);
+            tournament_thread(file, max_datapoints_per_file, state_ref, eval_ref.clone(), mcts_config, max_datapoints_per_game, num_rand_moves);
         }));
     }
     if show_progress {
-        let bar = if let Some(files) = num_files {
-            ProgressBar::new(files as u64).with_style(ProgressStyle::with_template("[{elapsed_precise}] {bar:100.cyan/blue} {pos:>7}/{len:7} {msg}").unwrap())
-        } else {
-            ProgressBar::new(u64::MAX).with_style(ProgressStyle::with_template("[{elapsed_precise}] {pos:>7} {msg}").unwrap())
-        };
+        // The *2 is because they are counted in pairs, but we should display games
+        let bar = ProgressBar::new(total_pairs as u64 * 2).with_style(ProgressStyle::with_template("[{elapsed_precise}] {msg} {bar:100.cyan/blue} {pos:>7}/{len:7}").unwrap()).with_message("Generating training data");
         loop {
             let lock = state.lock().unwrap();
-            bar.set_position(lock.completed as u64);
-            if let Some(files) = num_files {
-                if files == lock.completed {
-                    break;
-                }
+            bar.set_position(lock.completed as u64 * 2);
+            if total_pairs == lock.completed {
+                break;
             }
             drop(lock);
             thread::sleep(Duration::from_millis(100));
@@ -348,6 +482,8 @@ pub fn generate_data_multithreaded<P: AsRef<Path>, E: PositionEvaluate + 'static
     for thread in threads {
         thread.join().unwrap();
     }
+    let lock = state.lock().unwrap();
+    (lock.scores.clone(), lock.draw_count, lock.required * 2) // Required is in pairs
 }
 
 pub struct DataLoader<B: Backend> {
@@ -355,8 +491,7 @@ pub struct DataLoader<B: Backend> {
     data_receiver: Receiver<Option<(NetworkInput<B>, NetworkTarget<B>)>>
 }
 impl<B: Backend> DataLoader<B> {
-    const MAX_NUM_DATAPOINTS: usize = 100_000;
-    fn loader_handler(dev: &B::Device, dir: PathBuf, sender: Sender<Option<(NetworkInput<B>, NetworkTarget<B>)>>, receiver: Receiver<bool>, epoch_count: usize) {
+    fn loader_handler(dev: &B::Device, dir: PathBuf, sender: Sender<Option<(NetworkInput<B>, NetworkTarget<B>)>>, receiver: Receiver<bool>, epoch_count: usize, max_dp_per_batch: usize) {
         for _ in 0..epoch_count {
             let mut files = fs::read_dir(&dir).unwrap();
             let mut data = Vec::new();
@@ -365,14 +500,17 @@ impl<B: Backend> DataLoader<B> {
                     let file = File::open(entry.path()).unwrap();
                     let num_datapoints = file.metadata().unwrap().len() as usize / PositionInfo::SIZE;
                     let mut reader = BufReader::new(file);
-                    let num_sets = num_datapoints / Self::MAX_NUM_DATAPOINTS;
+                    let num_sets = num_datapoints / max_dp_per_batch;
                     for set_index in 0..num_sets + 1 { // The +1 is so that the final set isn't discared, particularly in datasets smaller than the MAX_NUM_DATAPOINTS this is important
                         data.clear();
                         let data_len = if set_index == num_sets {
-                            num_datapoints - num_sets * Self::MAX_NUM_DATAPOINTS // The remainder of the sets
+                            num_datapoints - num_sets * max_dp_per_batch // The remainder of the sets
                         } else {
-                            Self::MAX_NUM_DATAPOINTS
+                            max_dp_per_batch
                         };
+                        if data_len == 0 {
+                            break;
+                        }
                         for _ in 0..data_len {
                             let mut datapoint = PositionInfo { bytes: [0; PositionInfo::SIZE] };
                             reader.read_exact(&mut datapoint.bytes).unwrap();
@@ -396,16 +534,16 @@ impl<B: Backend> DataLoader<B> {
         if sender.send(None).is_err() {return};
         return;
     }
-    pub fn new<P: AsRef<Path>>(dev: &B::Device, dir: P, epoch_count: usize) -> (Self, usize) {
+    pub fn new<P: AsRef<Path>>(dev: &B::Device, dir: P, epoch_count: usize, max_dp_per_batch: usize) -> (Self, usize) {
         let dir = dir.as_ref().to_owned();
         let file_count = fs::read_dir(&dir).unwrap().count();
         let datapoints_per_file = fs::read_dir(&dir).unwrap().next().unwrap().unwrap().metadata().unwrap().len() as usize / PositionInfo::SIZE;
-        let sets_per_file = datapoints_per_file / Self::MAX_NUM_DATAPOINTS + if datapoints_per_file % Self::MAX_NUM_DATAPOINTS != 0 {1} else {0};
+        let sets_per_file = datapoints_per_file / max_dp_per_batch + if datapoints_per_file % max_dp_per_batch != 0 {1} else {0};
         let (next_sender, next_receiver) = channel();
         let (data_sender, data_receiver) = channel();
         let other_dev = dev.clone();
         thread::spawn(move || {
-            Self::loader_handler(&other_dev, dir, data_sender, next_receiver, epoch_count);
+            Self::loader_handler(&other_dev, dir, data_sender, next_receiver, epoch_count, max_dp_per_batch);
         });
         (Self {
             next_sender,
@@ -493,4 +631,17 @@ impl TrainableData for &[crate::ai::data::PositionInfo] {
         };
         (input, target)
     }
+}
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct DataGenConfig {
+    pub evaluators: Vec<String>,
+    pub dataset_name: String,
+    pub mcts_evaluations: usize,
+    pub mcts_use_value: bool,
+    pub policy_deviance: f32,
+    pub max_data_per_game: usize,
+    pub num_rand_moves: usize,
+    pub pairs_per_matchup: usize,
+    pub datapoints_per_file: usize,
 }

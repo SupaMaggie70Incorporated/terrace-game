@@ -101,12 +101,12 @@ pub fn eval_board(board: &TerraceGameState, legal_move_policies: &mut Vec<(Move,
                     // Penalize being far up the board
                     let y_penalty = match p_y {
                         0 => 0.0,
-                        1 => -0.5,
-                        2 => -1.5,
-                        3 => -2.5,
-                        4 => -4.5,
-                        5 => -7.0,
-                        6 => -10.0,
+                        1 => -2.0,
+                        2 => -4.0,
+                        3 => -8.0,
+                        4 => -10.0,
+                        5 => -15.0,
+                        6 => -15.0,
                         7 => -15.0,
                         _ => unreachable!()
                     };

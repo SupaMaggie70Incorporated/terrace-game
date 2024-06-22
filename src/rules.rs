@@ -378,7 +378,7 @@ pub struct TerraceGameState {
     result: GameResult,
 }
 impl TerraceGameState {
-    pub const NO_CAPTURE_MOVES_TO_DRAW: u16 = 40;
+    pub const NO_CAPTURE_MOVES_TO_DRAW: u16 = 100;
     pub const fn setup_new() -> Self {
         let mut board = [[Piece::NONE;8];8];
         let mut x = 0;
