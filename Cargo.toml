@@ -10,7 +10,7 @@ edition = "2021"
 ai = ["dep:burn", "dep:flate2", "dep:plotters", "dep:indicatif", "dep:csv", "dep:serde", "toml"]
 gui = ["dep:image", "dep:slint"]
 default = [
-    "ai",
+    #"ai",
     "gui"
 ]
 

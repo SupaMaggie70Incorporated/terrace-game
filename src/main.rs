@@ -2,10 +2,15 @@ use std::str::FromStr;
 use std::time::Duration;
 use std::{collections::HashMap, env::args};
 use std::ops::Deref;
+#[cfg(feature="ai")]
 use ai::data::DataGenConfig;
+#[cfg(feature="ai")]
 use ai::eval::Evaluator;
+#[cfg(feature="ai")]
 use ai::net::{self, Network, NetworkConfig};
+#[cfg(feature="ai")]
 use ai::train_loop::TrainLoopConfig;
+#[cfg(feature="ai")]
 use burn::module::Module;
 #[cfg(feature = "ai")]
 use ai::{compare::{compare_singlethreaded, elo_comparison, CompareResult, EloComparisonMode}, net::{Mlp, MlpConfig, Resnet, ResnetConfig}};
@@ -14,10 +19,14 @@ use mcts::MctsSearchConfig;
 use rand::Rng;
 use rules::{AbsoluteGameResult, GameResult, TerraceGameState};
 use cfg_if::cfg_if;
+#[cfg(feature="ai")]
 use serde::Deserialize;
 use uuid::Uuid;
+#[cfg(feature="ai")]
 use crate::ai::compare::compare_multithreaded;
+#[cfg(feature="ai")]
 use crate::ai::CURRENT_NETWORK_TYPE;
+#[cfg(feature="ai")]
 use crate::ai::train_loop::training_loop;
 
 mod rules;
@@ -115,6 +124,7 @@ impl SpecificArgs {
         }
     }
 }
+#[cfg(feature="ai")]
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Config {

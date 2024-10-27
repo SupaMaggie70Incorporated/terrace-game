@@ -1,12 +1,16 @@
 use std::io::Read;
+#[cfg(feature="ai")]
 use burn::module::Module;
+#[cfg(feature="ai")]
 use burn::tensor::backend::Backend;
 use cfg_if::cfg_if;
 
 use rand::Rng;
 use slint::{Color, Image, Model, ModelExt, ModelRc, SharedPixelBuffer, VecModel};
 use image::EncodableLayout;
+#[cfg(feature="ai")]
 use crate::ai::eval::Evaluator;
+#[cfg(feature="ai")]
 use crate::mcts::{MctsSearch, MctsSearchConfig, MctsStopCondition};
 
 use crate::rules::{self, GameResult, Move, Square, TerraceGameState};
@@ -80,7 +84,8 @@ struct AppState {
     ui: AppWindow,
 }
 
-pub fn run(game_state: TerraceGameState, eval: Option<Evaluator<impl Backend>>) -> Result<(), slint::PlatformError> {
+pub fn run(game_state: TerraceGameState, 
+    #[cfg(feature="ai")]eval: Option<Evaluator<impl Backend>>) -> Result<(), slint::PlatformError> {
     let ui = AppWindow::new()?;
 
     let mut app_state = AppState {
@@ -131,6 +136,7 @@ pub fn run(game_state: TerraceGameState, eval: Option<Evaluator<impl Backend>>) 
         else if cfg!(feature="ai") {
             println!("Making move");
             if app_state.game_state.result() == GameResult::Ongoing {
+                #[cfg(feature="ai")]
                 if let Some(eval) = &eval {
                     let res = eval.find_best_value(app_state.game_state, 0.05);
                     //println!("Computer has value {:?}", res.value);
